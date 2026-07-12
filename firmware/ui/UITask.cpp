@@ -891,13 +891,23 @@ void UITask::finishOnboarding() {
 }
 
 void UITask::toggleSOS() {
-  _sos_active = !_sos_active;
-  if (_sos_active) {
+  if (!_sos_active) {
+    // Require a real location before the beacon can arm: a live GPS fix if a
+    // module is connected, otherwise the manual position from Settings.
+    double lat, lon;
+    if (!ownPos(lat, lon)) {
+      toast("Set a location first (GPS or manual)", C_YELLOW);
+      hw.chimeError();
+      _dirty = true;
+      return;
+    }
+    _sos_active = true;
     hw.chimeError();
     _sos_last = 0;          // force an immediate first broadcast
     sendSOSNow();
     toast("SOS ACTIVE - broadcasting", C_RED);
   } else {
+    _sos_active = false;
     toast("SOS cancelled", C_YELLOW);
     termLog(C_TERM_SYS, "SOS cancelled");
   }
@@ -1114,16 +1124,17 @@ void SOSScreen::draw() {
   c.print(on ? "ACTIVE - broadcasting every 2 min" : "Emergency location beacon");
 
   double lat, lon;
+  bool have_pos = ui.ownPos(lat, lon);
   char loc[52];
-  if (ui.ownPos(lat, lon)) snprintf(loc, sizeof(loc), "pos: %.5f, %.5f", lat, lon);
-  else snprintf(loc, sizeof(loc), "no GPS fix - set manual pos in Settings");
-  c.setTextColor(on ? 0xFFFF : C_FG_FAINT);
+  if (have_pos) snprintf(loc, sizeof(loc), "pos: %.5f, %.5f", lat, lon);
+  else snprintf(loc, sizeof(loc), "no location - set GPS or manual in Settings");
+  c.setTextColor(on ? 0xFFFF : (have_pos ? C_FG_FAINT : C_YELLOW));
   c.setCursor(40, 132);
   c.print(loc);
 
-  c.setTextColor(on ? 0xFFFF : C_ACCENT);
-  c.setCursor(90, 190);
-  c.print(on ? "Click to STOP" : "Click to START");
+  c.setTextColor(on ? 0xFFFF : (have_pos ? C_ACCENT : C_FG_FAINT));
+  c.setCursor(70, 190);
+  c.print(on ? "Click to STOP" : have_pos ? "Click to START" : "Needs a location first");
 }
 
 bool SOSScreen::key(uint8_t k) {

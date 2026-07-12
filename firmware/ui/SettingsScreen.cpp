@@ -5,7 +5,7 @@
 enum SetItem : int {
   SI_NAME = 0, SI_FREQ, SI_SF, SI_BW, SI_CR, SI_POWER, SI_PRESET,
   SI_BRIGHT, SI_TIMEOUT, SI_ALWAYS, SI_SOUND, SI_VOL, SI_FLIP, SI_TOUCHMAP, SI_TBSPEED, SI_ADVINT,
-  SI_LOCPOL, SI_MANLAT, SI_MANLON, SI_AUTOADD,
+  SI_GPS, SI_LOCPOL, SI_MANLAT, SI_MANLON, SI_AUTOADD,
   SI_ADVERT, SI_ADVERTF, SI_SDMAPS, SI_SDUPDATE, SI_ABOUT,
   SI_COUNT
 };
@@ -13,7 +13,7 @@ enum SetItem : int {
 static const char* LABELS[SI_COUNT] = {
   "Node name", "Frequency (MHz)", "Spreading factor", "Bandwidth (kHz)", "Coding rate", "TX power (dBm)", "Radio preset setup",
   "Brightness", "Screen timeout (s)", "Always-on clock", "Sounds", "Volume", "Flip display", "Touch mapping", "Trackball speed", "Auto-advert (min)",
-  "Share location in advert", "Manual latitude", "Manual longitude", "Auto-add contacts",
+  "GPS module", "Share location in advert", "Manual latitude", "Manual longitude", "Auto-add contacts",
   "Send advert (0-hop)", "Send advert (flood)", "Reload SD map packs", "Update firmware from SD", "About"
 };
 
@@ -65,6 +65,7 @@ void SettingsScreen::draw() {
       case SI_TBSPEED:  snprintf(v, sizeof(v), "%d/5", ui.set.tb_speed); break;
       case SI_ADVINT:   if (ui.set.adv_interval_min) snprintf(v, sizeof(v), "%d", ui.set.adv_interval_min); else strcpy(v, "off"); break;
       case SI_PRESET:   strcpy(v, ">"); break;
+      case SI_GPS:     strcpy(v, p->gps_enabled ? "on" : "off"); break;
       case SI_LOCPOL:  strcpy(v, p->advert_loc_policy ? "yes" : "no"); break;
       case SI_MANLAT:  snprintf(v, sizeof(v), "%.5f", ui.set.man_lat / 1000000.0); break;
       case SI_MANLON:  snprintf(v, sizeof(v), "%.5f", ui.set.man_lon / 1000000.0); break;
@@ -166,6 +167,13 @@ void SettingsScreen::adjust(int dir) {
       ui.set.adv_interval_min = IVS[ii];
       break;
     }
+    case SI_GPS:
+      p->gps_enabled = p->gps_enabled ? 0 : 1;
+      if (p->gps_enabled && p->gps_interval == 0) p->gps_interval = 5;
+      ui.mesh->applyGpsPrefs();
+      ui.mesh->savePrefs();
+      ui.toast(p->gps_enabled ? "GPS on - needs a connected module" : "GPS off");
+      break;
     case SI_LOCPOL: p->advert_loc_policy = p->advert_loc_policy ? 0 : 1; break;
     case SI_AUTOADD: p->manual_add_contacts ^= 1; break;
     default: return;
