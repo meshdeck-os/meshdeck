@@ -2,6 +2,17 @@
 
 You only need three things: a Mac/PC, a USB-C cable (a data cable, not charge-only), and your T-Deck.
 
+## Easiest: one-click web flasher (no install)
+
+1. Open **https://meshdeck-os.github.io/meshdeck/** in **Chrome or Edge** (Web Serial isn't supported in Safari/Firefox).
+2. Plug the T-Deck into the computer and switch it **on**.
+3. Click **Flash MeshDeck**, pick the serial port, choose **Install**.
+4. Wait ~1 minute, then power-cycle the T-Deck. Done — it reboots into MeshDeck.
+
+If the device doesn't appear in the port list, put it in download mode: switch it **off**, hold the **trackball button** in, switch **on** while holding, release, then click Flash again. Power-cycle once after flashing.
+
+The two methods below (command line / SD card) are optional alternatives.
+
 ## One-time setup (macOS)
 
 1. Install the command line tools if you have never used Terminal for development:
@@ -77,9 +88,14 @@ python3 tools/gen_sdmap.py <natural-earth-repo> alps.mdm 5.5 43.5 16.5 48.5
 
 ## First boot
 
-- The device generates its identity on first boot; give it a name in **Settings → Node name**.
-- Radio defaults are the UK/EU MeshCore preset: **869.618 MHz, BW 62.5, SF 8, CR 5**.
-- Send an advert (Settings → Send advert) so nearby nodes learn about you.
+- The device generates its identity on first boot, then shows a short setup:
+  **type your node name → Enter → pick a radio preset** from the list.
+- Choose the preset your local mesh uses. The default is the UK/EU MeshCore
+  **EU/UK (Narrow)** preset: **869.618 MHz, BW 62.5, SF 8, CR 8**. You can re-run
+  the picker any time from **Settings → Radio preset setup**.
+- Both radios must match on frequency, bandwidth and spreading factor or they
+  won't hear each other. Use **Home → Radio** to check live signal/packet counts.
+- Tap **Discover** (or Settings → Send advert) so nearby nodes learn about you.
 - Your old MeshCore contacts/identity from other firmware are kept if you were
   already running MeshCore companion firmware (same storage format).
 
