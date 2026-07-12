@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeshDeck OS - Web Flasher</title>
+<style>
+  :root {
+    --bg: #0a0c10; --alt: #161a22; --raised: #222834;
+    --fg: #e6eaf0; --dim: #8c94a0; --faint: #505662;
+    --accent: #409cff; --green: #46c878; --yellow: #f0c846; --orange: #fa963c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh; padding: 40px 16px;
+  }
+  .card {
+    width: 100%; max-width: 620px; background: var(--alt);
+    border: 1px solid var(--faint); border-radius: 14px;
+    padding: 28px 32px; margin-bottom: 20px;
+  }
+  h1 { font-size: 30px; margin: 0 0 4px; color: var(--accent); }
+  h1 span { color: var(--fg); }
+  .sub { color: var(--dim); margin: 0 0 22px; font-size: 14px; }
+  h2 { font-size: 16px; color: var(--fg); margin: 0 0 12px; }
+  ol, ul { margin: 0; padding-left: 22px; color: var(--dim); font-size: 14px; line-height: 1.8; }
+  li b { color: var(--fg); font-weight: 600; }
+  .btnrow { display: flex; align-items: center; gap: 14px; margin: 18px 0 6px; }
+  esp-web-install-button::part(button) {
+    background: var(--accent); color: #0a0c10; font-family: inherit;
+    font-size: 16px; font-weight: 700; border: none; border-radius: 10px;
+    padding: 14px 28px; cursor: pointer;
+  }
+  esp-web-install-button::part(button):hover { background: #66b0ff; }
+  .note { font-size: 13px; color: var(--faint); margin-top: 14px; line-height: 1.6; }
+  .warn { border-left: 3px solid var(--yellow); padding: 10px 14px; background: var(--raised);
+          border-radius: 0 8px 8px 0; font-size: 13px; color: var(--dim); margin-top: 16px; line-height: 1.7; }
+  .warn b { color: var(--yellow); }
+  .tag { display: inline-block; background: var(--raised); border: 1px solid var(--faint);
+         border-radius: 6px; padding: 2px 10px; font-size: 12px; color: var(--dim); margin-right: 6px; }
+  code { background: var(--raised); padding: 1px 6px; border-radius: 4px; font-size: 13px; color: var(--green); }
+  a { color: var(--accent); }
+  .unsupported { display: none; color: var(--orange); font-size: 14px; margin-top: 10px; }
+  footer { color: var(--faint); font-size: 12px; margin-top: 8px; text-align: center; line-height: 1.7; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>MeshDeck <span>OS</span></h1>
+  <p class="sub">Standalone MeshCore firmware for the LilyGo T-Deck &mdash; flash it straight from your browser.</p>
+  <span class="tag">T-Deck</span><span class="tag">868 MHz UK/EU</span><span class="tag">MeshCore</span><span class="tag">v1.0.0</span>
+
+  <div class="btnrow">
+    <esp-web-install-button manifest="manifest.json">
+      <button slot="activate">Flash MeshDeck</button>
+      <span slot="unsupported" class="unsupported" style="display:inline">
+        This browser can't flash devices &mdash; use Chrome or Edge on a computer.
+      </span>
+    </esp-web-install-button>
+  </div>
+
+  <p class="note">Flashing erases the previous firmware but keeps nothing back:
+  your MeshCore identity and contacts are preserved if the device already ran
+  MeshCore-based firmware.</p>
+</div>
+
+<div class="card">
+  <h2>How to flash</h2>
+  <ol>
+    <li>Plug the T-Deck into this computer with a <b>USB-C data cable</b> and switch it <b>on</b>.</li>
+    <li>Click <b>Flash MeshDeck</b> above, pick the serial port, choose <b>Install</b>.</li>
+    <li>Wait ~1 minute. The device reboots into MeshDeck when done.</li>
+  </ol>
+  <div class="warn"><b>Device not showing up?</b> Put it in download mode:
+  switch it off &rarr; hold the <b>trackball button</b> in &rarr; switch on while
+  holding &rarr; release, then click Flash again. Power-cycle once after flashing.</div>
+</div>
+
+<div class="card">
+  <h2>After flashing</h2>
+  <ul>
+    <li>Set your name: <b>Settings &rarr; Node name</b>, then send an advert.</li>
+    <li>Radio preset: <code>869.618 MHz / BW 62.5 / SF 8</code> (UK/EU standard).</li>
+    <li>Optional: put <code>uk.mdm</code> in <code>/meshdeck-maps/</code> on an SD card for the high-detail map.</li>
+    <li>Phone app still works &mdash; pair over Bluetooth, PIN <code>123456</code>.</li>
+  </ul>
+</div>
+
+<footer>
+  MeshDeck OS &mdash; open source, MIT licence. Built on
+  <a href="https://github.com/meshcore-dev/MeshCore">MeshCore</a>.
+  Map data: Natural Earth (public domain). Not affiliated with the MeshCore store.
+</footer>
+
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+</body>
+</html>
