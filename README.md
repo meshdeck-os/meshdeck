@@ -12,6 +12,29 @@ Default preset is **868 MHz UK/EU** (MeshCore *EU/UK (Narrow)* — 869.618 MHz /
 
 Open that page in **Chrome or Edge**, plug the T-Deck in with a USB-C data cable, click **Flash MeshDeck** and pick the serial port. No install, nothing to build. (Full details and offline/command-line methods are in **FLASHING.md**.)
 
+## Screenshots
+
+Rendered at the T-Deck's native 320×240 display resolution.
+
+<table>
+<tr>
+<td align="center"><img src="docs/screenshots/home.png" width="400"><br><sub><b>Home</b> — 12-app grid, clock, mesh bars</sub></td>
+<td align="center"><img src="docs/screenshots/chat.png" width="400"><br><sub><b>Chat</b> — bubbles, channels, delivery ticks</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="docs/screenshots/map.png" width="400"><br><sub><b>Map</b> — offline vector map with live nodes</sub></td>
+<td align="center"><img src="docs/screenshots/diagnostics.png" width="400"><br><sub><b>Radio diagnostics</b> — freq/SF/BW/CR, RSSI, packets</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="docs/screenshots/onboarding.png" width="400"><br><sub><b>First-boot onboarding</b> — pick a radio preset</sub></td>
+<td align="center"><img src="docs/screenshots/heard.png" width="400"><br><sub><b>Heard / Discover</b> — recently seen stations</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="docs/screenshots/settings.png" width="400"><br><sub><b>Settings</b> — radio, display, GPS, adverts</sub></td>
+<td align="center"><img src="docs/screenshots/sos.png" width="400"><br><sub><b>SOS beacon</b> — repeating location broadcast</sub></td>
+</tr>
+</table>
+
 ## Features
 
 **Chat**
