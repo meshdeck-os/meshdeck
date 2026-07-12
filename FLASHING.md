@@ -68,9 +68,13 @@ Actions run (meshdeck-firmware artifact) if you prefer manual flashing.
 
 ## Updating later — no computer at all
 
-Once MeshDeck is on the device, you can update from an SD card:
-copy a new `firmware.bin` (the `meshdeck.bin` file, renamed) onto a FAT32 SD card,
-insert it, and choose **Settings → Update firmware from SD**.
+Once MeshDeck is on the device you can update from an SD card (the first install
+still has to be the flasher above — SD updates only work once MeshDeck is running):
+
+1. Download the latest app image: **https://meshdeck-os.github.io/meshdeck/meshdeck.bin**
+   (the browser saves it as `firmware.bin`).
+2. Copy `firmware.bin` to the root of a FAT32 SD card and insert it.
+3. On the device choose **Settings → Update firmware from SD**. It flashes and reboots.
 
 ## SD card maps
 
