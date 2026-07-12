@@ -84,10 +84,21 @@
   <h2>After flashing</h2>
   <ul>
     <li>Set your name: <b>Settings &rarr; Node name</b>, then send an advert.</li>
-    <li>Radio preset: <code>869.618 MHz / BW 62.5 / SF 8</code> (UK/EU standard).</li>
+    <li>On first boot: enter a <b>node name</b>, then pick a <b>radio preset</b> (default EU/UK Narrow <code>869.618 / BW 62.5 / SF 8 / CR 8</code>).</li>
     <li>Optional: put <code>uk.mdm</code> in <code>/meshdeck-maps/</code> on an SD card for the high-detail map.</li>
     <li>Phone app still works &mdash; pair over Bluetooth, PIN <code>123456</code>.</li>
   </ul>
+</div>
+
+<div class="card">
+  <h2>Update later from an SD card (no computer)</h2>
+  <ol>
+    <li><a href="meshdeck.bin" download="firmware.bin"><b>Download the latest firmware</b></a> (your browser saves it as <code>firmware.bin</code>).</li>
+    <li>Copy it to the root of a <b>FAT32</b> SD card and insert the card.</li>
+    <li>On the device: <b>Settings &rarr; Update firmware from SD</b>. It flashes and reboots.</li>
+  </ol>
+  <div class="warn"><b>First install must use the flasher above.</b> SD updates only work
+  once MeshDeck is already running &mdash; a bare device has nothing on it yet to read the card.</div>
 </div>
 
 <footer>
