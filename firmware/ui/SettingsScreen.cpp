@@ -3,18 +3,18 @@
 #include <helpers/TxtDataHelpers.h>
 
 enum SetItem : int {
-  SI_NAME = 0, SI_FREQ, SI_SF, SI_BW, SI_CR, SI_POWER, SI_PRESET,
-  SI_BRIGHT, SI_TIMEOUT, SI_ALWAYS, SI_SOUND, SI_VOL, SI_FLIP, SI_TOUCHMAP, SI_TBSPEED, SI_ADVINT,
+  SI_NAME = 0, SI_FREQ, SI_SF, SI_BW, SI_CR, SI_PATHMODE, SI_POWER, SI_PRESET,
+  SI_BRIGHT, SI_TIMEOUT, SI_TZ, SI_ALWAYS, SI_SOUND, SI_VOL, SI_FLIP, SI_TOUCHMAP, SI_TBSPEED, SI_ADVINT, SI_SOSEN,
   SI_GPS, SI_LOCPOL, SI_MANLAT, SI_MANLON, SI_AUTOADD,
-  SI_ADVERT, SI_ADVERTF, SI_SDMAPS, SI_SDUPDATE, SI_ABOUT,
+  SI_ADVERT, SI_ADVERTF, SI_CLEARMSG, SI_SDMAPS, SI_SDUPDATE, SI_ABOUT,
   SI_COUNT
 };
 
 static const char* LABELS[SI_COUNT] = {
-  "Node name", "Frequency (MHz)", "Spreading factor", "Bandwidth (kHz)", "Coding rate", "TX power (dBm)", "Radio preset setup",
-  "Brightness", "Screen timeout (s)", "Always-on clock", "Sounds", "Volume", "Flip display", "Touch mapping", "Trackball speed", "Auto-advert (min)",
+  "Node name", "Frequency (MHz)", "Spreading factor", "Bandwidth (kHz)", "Coding rate", "Path mode (bytes/hop)", "TX power (dBm)", "Radio preset setup",
+  "Brightness", "Screen timeout (s)", "Time zone (UTC+)", "Always-on clock", "Sounds", "Volume", "Flip display", "Touch mapping", "Trackball speed", "Auto-advert (min)", "SOS beacon",
   "GPS module", "Share location in advert", "Manual latitude", "Manual longitude", "Auto-add contacts",
-  "Send advert (0-hop)", "Send advert (flood)", "Reload SD map packs", "Update firmware from SD", "About"
+  "Send advert (0-hop)", "Send advert (flood)", "Clear message history", "Reload SD map packs", "Update firmware from SD", "About"
 };
 
 #define S_ROW_H 18
@@ -54,9 +54,13 @@ void SettingsScreen::draw() {
       case SI_SF:      snprintf(v, sizeof(v), "%d", p->sf); break;
       case SI_BW:      snprintf(v, sizeof(v), "%s", StrHelper::ftoa(p->bw)); break;
       case SI_CR:      snprintf(v, sizeof(v), "%d", p->cr); break;
+      case SI_PATHMODE: snprintf(v, sizeof(v), "%d", p->path_hash_mode + 1); break;
       case SI_POWER:   snprintf(v, sizeof(v), "%d", p->tx_power_dbm); break;
       case SI_BRIGHT:  snprintf(v, sizeof(v), "%d%%", ui.set.brightness * 100 / 255); break;
       case SI_TIMEOUT: if (ui.set.timeout_s) snprintf(v, sizeof(v), "%d", ui.set.timeout_s); else strcpy(v, "never"); break;
+      case SI_TZ:      snprintf(v, sizeof(v), "%+d", ui.set.tz_offset); break;
+      case SI_SOSEN:   strcpy(v, ui.set.sos_disabled ? "off" : "on"); break;
+      case SI_CLEARMSG: strcpy(v, ">"); break;
       case SI_ALWAYS:  strcpy(v, ui.set.always_on ? "on" : "off"); break;
       case SI_SOUND:   strcpy(v, ui.set.sounds ? "on" : "off"); break;
       case SI_VOL:     snprintf(v, sizeof(v), "%d/10", ui.set.volume); break;
@@ -115,6 +119,7 @@ void SettingsScreen::adjust(int dir) {
   switch (_sel) {
     case SI_SF:    p->sf = constrain(p->sf + dir, 7, 12); radio = true; break;
     case SI_CR:    p->cr = constrain(p->cr + dir, 5, 8); radio = true; break;
+    case SI_PATHMODE: p->path_hash_mode = constrain(p->path_hash_mode + dir, 0, 2); break;
     case SI_POWER: p->tx_power_dbm = constrain(p->tx_power_dbm + dir, 1, 22); radio = true; break;
     case SI_BW: {
       static const float BWS[] = { 62.5f, 125.0f, 250.0f, 500.0f };
@@ -139,6 +144,8 @@ void SettingsScreen::adjust(int dir) {
       ui.set.timeout_s = TOS[ti];
       break;
     }
+    case SI_TZ:     ui.set.tz_offset = constrain(ui.set.tz_offset + dir, -12, 14); break;
+    case SI_SOSEN:  ui.set.sos_disabled = !ui.set.sos_disabled; break;
     case SI_ALWAYS: ui.set.always_on = !ui.set.always_on; break;
     case SI_SOUND:  ui.set.sounds = !ui.set.sounds; ui.hw.setSound(ui.set.sounds, ui.set.volume); break;
     case SI_VOL:
@@ -208,6 +215,10 @@ void SettingsScreen::select() {
       break;
     case SI_PRESET:
       ui.go(SCR_ONBOARD);
+      break;
+    case SI_CLEARMSG:
+      ui.store.clearAll();
+      ui.toast("Message history cleared", C_YELLOW);
       break;
     case SI_ADVERT:
       ui.mesh->advert();

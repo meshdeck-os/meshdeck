@@ -129,6 +129,17 @@ void MessageStore::markRead(DeckThread* t) {
   if (t && t->unread) { t->unread = 0; }
 }
 
+void MessageStore::clearAll() {
+  // empty every conversation's ring (keeps the channel/DM tabs, wipes messages)
+  for (int i = 0; i < _num; i++) {
+    _threads[i].count = 0;
+    _threads[i].head = 0;
+    _threads[i].unread = 0;
+    _threads[i].last_ts = 0;
+  }
+  persistNow();
+}
+
 int MessageStore::totalUnread() const {
   int n = 0;
   for (int i = 0; i < _num; i++) n += _threads[i].unread;

@@ -48,7 +48,9 @@ struct DeckSettings {
   uint8_t tb_speed;           // trackball speed 1(slow)..5(fast); 0 = unset -> default
   uint8_t configured;         // 0 = show first-boot radio-preset onboarding
   uint8_t adv_interval_min;   // auto-advert period in minutes (0 = off)
-  uint8_t reserved[4];
+  int8_t  tz_offset;          // local time = UTC + tz_offset hours (-12..+14)
+  uint8_t sos_disabled;       // 1 = hide/disable the SOS beacon tile
+  uint8_t reserved[2];
 };
 
 // ---- last heard ----
@@ -180,7 +182,8 @@ public:
   int meshBars() const;                // 0..4 based on recent heard + snr
   bool ownPos(double& lat, double& lon) const;
   uint32_t epochNow() const;
-  void fmtClock(char* out, size_t sz) const;      // "14:05"
+  uint32_t localEpoch() const;                    // epochNow() + timezone offset
+  void fmtClock(char* out, size_t sz) const;      // "14:05" (local)
   void fmtAgo(char* out, size_t sz, uint32_t epoch_then) const;
   void drawStatusBar(const char* title);
 

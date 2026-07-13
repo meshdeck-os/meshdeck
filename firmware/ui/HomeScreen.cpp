@@ -28,6 +28,10 @@ static const AppDef APPS[N_APPS] = {
 
 // open an app tile: Discover sends a flood advert first, everything else just navigates
 static void openApp(UITask& ui, int i) {
+  if (APPS[i].scr == SCR_SOS && ui.set.sos_disabled) {
+    ui.toast("SOS is disabled (Settings)", C_YELLOW);
+    return;
+  }
   if (APPS[i].disc) ui.discover();
   else ui.go(APPS[i].scr);
 }
@@ -45,7 +49,7 @@ void HomeScreen::draw() {
   c.print(clk);
 
   // date + node name
-  uint32_t e = ui.epochNow();
+  uint32_t e = ui.localEpoch();
   c.setTextSize(1);
   c.setTextColor(C_FG_DIM);
   if (e > 1000000000) {

@@ -295,5 +295,8 @@ bool MapScreen::touch(const TouchEvent& e) {
     _clat -= (e.y - SCREEN_H / 2) / ys;
     return true;
   }
+  // Consume the finger-lift too, so a horizontal pan isn't caught by the
+  // global "swipe right = back" and bounce us out to the menu (#9).
+  if (e.kind == TouchEvent::RELEASE) return true;
   return false;
 }

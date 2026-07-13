@@ -156,7 +156,7 @@ void UITask::earlyInit() {
   // load settings early (SPIFFS not up yet -> defaults; re-loaded in begin())
   set.magic = DECKSET_MAGIC;
   set.brightness = 255;
-  set.timeout_s = 0;          // never auto-sleep by default (opt-in in Settings)
+  set.timeout_s = 60;         // sleep the screen after 60s idle (saves battery; #4)
   set.sounds = 1;
   set.volume = 6;
   set.flip = 0;
@@ -633,8 +633,14 @@ uint32_t UITask::epochNow() const {
   return mesh ? mesh->getRTCClock()->getCurrentTime() : 0;
 }
 
-void UITask::fmtClock(char* out, size_t sz) const {
+uint32_t UITask::localEpoch() const {
   uint32_t e = epochNow();
+  if (e < 1000000000) return e;                       // clock not set yet
+  return e + (int32_t)set.tz_offset * 3600;           // apply timezone offset
+}
+
+void UITask::fmtClock(char* out, size_t sz) const {
+  uint32_t e = localEpoch();
   if (e < 1000000000) { snprintf(out, sz, "--:--"); return; }
   DateTime dt(e);
   snprintf(out, sz, "%02d:%02d", dt.hour(), dt.minute());
@@ -891,6 +897,7 @@ void UITask::finishOnboarding() {
 }
 
 void UITask::toggleSOS() {
+  if (set.sos_disabled) { toast("SOS is disabled in Settings", C_YELLOW); return; }
   if (!_sos_active) {
     // Require a real location before the beacon can arm: a live GPS fix if a
     // module is connected, otherwise the manual position from Settings.

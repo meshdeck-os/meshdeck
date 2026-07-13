@@ -58,6 +58,7 @@ public:
   bool markDelivered(uint32_t ack);                 // returns true if an outgoing msg matched
   void markTimedOut();                              // newest un-acked outgoing -> failed
   void markRead(DeckThread* t);
+  void clearAll();                                  // wipe all message history (#11)
   int  totalUnread() const;
   void sortByRecent(int* order) const;              // fills order[numThreads()]
 
