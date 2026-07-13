@@ -8,6 +8,10 @@
 #include <esp_heap_caps.h>
 #include <stdarg.h>
 #include <math.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <SD.h>
 
 #define SETTINGS_FILE "/meshdeck_set.bin"
 
@@ -223,6 +227,10 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
   // never correct on the T-Deck GT911, so treat a stored 0 as "use the default".
   if (set.touch_map == 0) set.touch_map = 2;
   applySettings();
+
+  // WiFi: reconnect to the saved network on boot (T-Deck Plus)
+  loadWifi();
+  if (_wifi_want && _wifi_ssid[0]) { WiFi.mode(WIFI_STA); WiFi.begin(_wifi_ssid, _wifi_pass); }
 
   store.begin();
 
@@ -705,6 +713,22 @@ void UITask::drawStatusBar(const char* title) {
     c.print(unread > 99 ? 99 : unread);
   }
 
+  // GPS fix marker (green = has a position fix, faint = on but no fix yet)
+  if (prefs && prefs->gps_enabled) {
+    x -= 12;
+    c.setTextColor(gpsFix() ? C_GREEN : C_FG_FAINT);
+    c.setCursor(x, 5);
+    c.print("G");
+  }
+  // WiFi marker (green = connected, yellow = connecting)
+  int ws = wifiState();
+  if (ws) {
+    x -= 12;
+    c.setTextColor(ws == 2 ? C_GREEN : C_YELLOW);
+    c.setCursor(x, 5);
+    c.print("W");
+  }
+
   // BLE connected marker
   if (hasConnection()) {
     x -= 12;
@@ -937,6 +961,91 @@ void UITask::sendSOSNow() {
   }
   sendChannel(0, msg);   // public channel
   termLog(C_TERM_TX, "%s", msg);
+}
+
+// ---------------------------------------------------------------- WiFi
+
+void UITask::loadWifi() {
+  File f = SPIFFS.open("/wifi.cfg", "r");
+  if (!f) return;
+  String s = f.readStringUntil('\n'); s.trim();
+  String p = f.readStringUntil('\n'); p.trim();
+  String w = f.readStringUntil('\n');
+  StrHelper::strncpy(_wifi_ssid, s.c_str(), sizeof(_wifi_ssid));
+  StrHelper::strncpy(_wifi_pass, p.c_str(), sizeof(_wifi_pass));
+  _wifi_want = w.toInt() != 0;
+  f.close();
+}
+
+void UITask::saveWifi() {
+  File f = SPIFFS.open("/wifi.cfg", "w");
+  if (!f) return;
+  f.printf("%s\n%s\n%d\n", _wifi_ssid, _wifi_pass, _wifi_want ? 1 : 0);
+  f.close();
+}
+
+void UITask::wifiConnect() {
+  if (_wifi_ssid[0] == 0) { toast("Set a WiFi SSID first", C_YELLOW); return; }
+  _wifi_want = true;
+  saveWifi();
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(_wifi_ssid, _wifi_pass);
+  toast("WiFi: connecting...", C_CYAN);
+  termLog(C_TERM_SYS, "WiFi connecting to %s", _wifi_ssid);
+}
+
+void UITask::wifiOff() {
+  _wifi_want = false;
+  saveWifi();
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  toast("WiFi off", C_YELLOW);
+}
+
+int UITask::wifiState() const {
+  if (!_wifi_want) return 0;
+  return WiFi.status() == WL_CONNECTED ? 2 : 1;
+}
+
+// Fetch a .mdm map pack over WiFi (from the flasher site) onto the SD card.
+const char* UITask::downloadMapPack(const char* name) {
+  if (wifiState() != 2) return "Connect WiFi first";
+  char url[128];
+  snprintf(url, sizeof(url), "https://meshdeck-os.github.io/meshdeck/maps/%s.mdm", name);
+  WiFiClientSecure client; client.setInsecure();
+  HTTPClient http;
+  if (!http.begin(client, url)) return "URL error";
+  int code = http.GET();
+  if (code != 200) { http.end(); return "HTTP error"; }
+  if (!hw.sdBegin()) { http.end(); return "No SD card"; }
+  SD.mkdir("/meshdeck-maps");
+  char path[48]; snprintf(path, sizeof(path), "/meshdeck-maps/%s.mdm", name);
+  if (SD.exists(path)) SD.remove(path);   // avoid stale trailing bytes on re-download
+  File f = SD.open(path, FILE_WRITE);
+  if (!f) { http.end(); hw.sdEnd(); return "SD write failed"; }
+  WiFiClient* stream = http.getStreamPtr();
+  uint8_t buf[512];
+  int total = 0, len = http.getSize();
+  uint32_t t0 = millis();
+  while (http.connected() && (len > 0 || len == -1) && millis() - t0 < 30000) {
+    size_t avail = stream->available();
+    if (avail) {
+      int r = stream->readBytes(buf, avail > sizeof(buf) ? sizeof(buf) : avail);
+      f.write(buf, r); total += r;
+      if (len > 0) { len -= r; if (len == 0) break; }
+    } else delay(2);
+  }
+  f.close(); http.end(); hw.sdEnd();
+  if (total <= 0) return "Empty download";
+  reloadSDMaps();
+  return nullptr;
+}
+
+const char* UITask::prepareSD() {
+  if (!hw.sdBegin()) return "No SD card";
+  bool ok = SD.exists("/meshdeck-maps") || SD.mkdir("/meshdeck-maps");
+  hw.sdEnd();
+  return ok ? nullptr : "SD error";
 }
 
 // ---------------------------------------------------------------- Onboarding screen

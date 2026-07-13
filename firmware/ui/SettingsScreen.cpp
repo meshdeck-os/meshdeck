@@ -5,16 +5,16 @@
 enum SetItem : int {
   SI_NAME = 0, SI_FREQ, SI_SF, SI_BW, SI_CR, SI_PATHMODE, SI_POWER, SI_PRESET,
   SI_BRIGHT, SI_TIMEOUT, SI_TZ, SI_ALWAYS, SI_SOUND, SI_VOL, SI_FLIP, SI_TOUCHMAP, SI_TBSPEED, SI_ADVINT, SI_SOSEN,
-  SI_GPS, SI_LOCPOL, SI_MANLAT, SI_MANLON, SI_AUTOADD,
-  SI_ADVERT, SI_ADVERTF, SI_CLEARMSG, SI_SDMAPS, SI_SDUPDATE, SI_ABOUT,
+  SI_GPS, SI_WIFISSID, SI_WIFIPASS, SI_WIFI, SI_LOCPOL, SI_MANLAT, SI_MANLON, SI_AUTOADD,
+  SI_ADVERT, SI_ADVERTF, SI_CLEARMSG, SI_DLMAP, SI_SDPREP, SI_SDMAPS, SI_SDUPDATE, SI_ABOUT,
   SI_COUNT
 };
 
 static const char* LABELS[SI_COUNT] = {
   "Node name", "Frequency (MHz)", "Spreading factor", "Bandwidth (kHz)", "Coding rate", "Path mode (bytes/hop)", "TX power (dBm)", "Radio preset setup",
   "Brightness", "Screen timeout (s)", "Time zone (UTC+)", "Always-on clock", "Sounds", "Volume", "Flip display", "Touch mapping", "Trackball speed", "Auto-advert (min)", "SOS beacon",
-  "GPS module", "Share location in advert", "Manual latitude", "Manual longitude", "Auto-add contacts",
-  "Send advert (0-hop)", "Send advert (flood)", "Clear message history", "Reload SD map packs", "Update firmware from SD", "About"
+  "GPS module", "WiFi network (SSID)", "WiFi password", "WiFi connect", "Share location in advert", "Manual latitude", "Manual longitude", "Auto-add contacts",
+  "Send advert (0-hop)", "Send advert (flood)", "Clear message history", "Download UK map (WiFi)", "Prepare SD (maps folder)", "Reload SD map packs", "Update firmware from SD", "About"
 };
 
 #define S_ROW_H 18
@@ -26,7 +26,8 @@ void SettingsScreen::enter() {
 }
 
 static bool isTextItem(int i) {
-  return i == SI_NAME || i == SI_FREQ || i == SI_MANLAT || i == SI_MANLON;
+  return i == SI_NAME || i == SI_FREQ || i == SI_MANLAT || i == SI_MANLON ||
+         i == SI_WIFISSID || i == SI_WIFIPASS;
 }
 
 void SettingsScreen::draw() {
@@ -70,6 +71,11 @@ void SettingsScreen::draw() {
       case SI_ADVINT:   if (ui.set.adv_interval_min) snprintf(v, sizeof(v), "%d", ui.set.adv_interval_min); else strcpy(v, "off"); break;
       case SI_PRESET:   strcpy(v, ">"); break;
       case SI_GPS:     strcpy(v, p->gps_enabled ? "on" : "off"); break;
+      case SI_WIFISSID: ellipsize(v, 18, ui.wifiSsid()[0] ? ui.wifiSsid() : "(not set)"); break;
+      case SI_WIFIPASS: strcpy(v, ui.wifiPass()[0] ? "****" : "(none)"); break;
+      case SI_WIFI: { int ws = ui.wifiState(); strcpy(v, ws == 2 ? "connected" : ws == 1 ? "connecting" : "off"); break; }
+      case SI_DLMAP:   strcpy(v, ">"); break;
+      case SI_SDPREP:  strcpy(v, ">"); break;
       case SI_LOCPOL:  strcpy(v, p->advert_loc_policy ? "yes" : "no"); break;
       case SI_MANLAT:  snprintf(v, sizeof(v), "%.5f", ui.set.man_lat / 1000000.0); break;
       case SI_MANLON:  snprintf(v, sizeof(v), "%.5f", ui.set.man_lon / 1000000.0); break;
@@ -220,6 +226,29 @@ void SettingsScreen::select() {
       ui.store.clearAll();
       ui.toast("Message history cleared", C_YELLOW);
       break;
+    case SI_WIFISSID:
+      _editing = true;
+      StrHelper::strncpy(_edit, ui.wifiSsid(), sizeof(_edit));
+      _elen = strlen(_edit);
+      break;
+    case SI_WIFIPASS:
+      _editing = true;
+      StrHelper::strncpy(_edit, ui.wifiPass(), sizeof(_edit));
+      _elen = strlen(_edit);
+      break;
+    case SI_WIFI:
+      if (ui.wifiState() == 0) ui.wifiConnect(); else ui.wifiOff();
+      break;
+    case SI_DLMAP: {
+      const char* err = ui.downloadMapPack("uk");
+      ui.toast(err ? err : "UK map downloaded", err ? C_RED : C_GREEN);
+      break;
+    }
+    case SI_SDPREP: {
+      const char* err = ui.prepareSD();
+      ui.toast(err ? err : "SD ready (/meshdeck-maps)", err ? C_RED : C_GREEN);
+      break;
+    }
     case SI_ADVERT:
       ui.mesh->advert();
       ui.toast("Zero-hop advert sent");
@@ -282,6 +311,16 @@ void SettingsScreen::applyEdit() {
       if (ui.sensors) { ui.sensors->node_lon = ui.set.man_lon / 1000000.0; }
       break;
     }
+    case SI_WIFISSID:
+      StrHelper::strncpy(ui.wifiSsid(), _edit, 33);
+      ui.saveWifi();
+      ui.toast("WiFi network saved");
+      break;
+    case SI_WIFIPASS:
+      StrHelper::strncpy(ui.wifiPass(), _edit, 65);
+      ui.saveWifi();
+      ui.toast("WiFi password saved");
+      break;
   }
   _editing = false;
 }

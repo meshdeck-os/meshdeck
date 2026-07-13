@@ -181,7 +181,7 @@ private:
   void applyEdit();
   int _sel = 0, _top = 0;
   bool _editing = false;
-  char _edit[40];
+  char _edit[68];          // large enough for a WiFi WPA password
   int _elen = 0;
 };
 

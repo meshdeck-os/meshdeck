@@ -144,6 +144,18 @@ public:
   bool sosActive() const { return _sos_active; }
   void sendSOSNow();
 
+  // WiFi + connectivity (T-Deck Plus: built-in GPS, WiFi on the ESP32-S3)
+  void loadWifi();
+  void saveWifi();
+  void wifiConnect();                  // connect using stored SSID/pass
+  void wifiOff();
+  int  wifiState() const;              // 0 off, 1 connecting, 2 connected
+  char* wifiSsid() { return _wifi_ssid; }
+  char* wifiPass() { return _wifi_pass; }
+  bool  gpsFix() const { return sensors && (sensors->node_lat != 0 || sensors->node_lon != 0); }
+  const char* downloadMapPack(const char* name);   // fetch a .mdm over WiFi to SD; nullptr = ok
+  const char* prepareSD();                          // create /meshdeck-maps on the SD card
+
   // chat actions
   bool sendDM(const uint8_t* pub_prefix, const char* text);       // to contact by 6-byte prefix
   bool sendChannel(uint8_t channel_idx, const char* text);
@@ -235,6 +247,11 @@ private:
   uint32_t _last_auto_adv = 0;
   bool _sos_active = false;
   uint32_t _sos_last = 0;
+
+  // WiFi
+  char _wifi_ssid[33] = "";
+  char _wifi_pass[65] = "";
+  bool _wifi_want = false;
 
   // serial terminal input
   char _ser_line[96];
