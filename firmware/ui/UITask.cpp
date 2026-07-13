@@ -820,9 +820,40 @@ void UITask::checkDim() {
   }
 }
 
+// Remap a letter key to the number/symbol printed on it (T-Deck legend), used
+// when the software symbol layer is active. Numbers/other chars pass through.
+static uint8_t symMap(uint8_t k) {
+  uint8_t c = (k >= 'A' && k <= 'Z') ? (uint8_t)(k - 'A' + 'a') : k;
+  switch (c) {
+    case 'q': return '#'; case 'w': return '1'; case 'e': return '2'; case 'r': return '3';
+    case 't': return '('; case 'y': return ')'; case 'u': return '_'; case 'i': return '-';
+    case 'o': return '+'; case 'p': return '@';
+    case 'a': return '*'; case 's': return '4'; case 'd': return '5'; case 'f': return '6';
+    case 'g': return '/'; case 'h': return ':'; case 'j': return ';'; case 'k': return '\'';
+    case 'l': return '"';
+    case 'z': return '7'; case 'x': return '8'; case 'c': return '9'; case 'v': return '?';
+    case 'b': return '!'; case 'n': return ','; case 'm': return '.';
+    case '$': return '0';
+    default:  return k;   // digits, space, enter, backspace, etc. unchanged
+  }
+}
+
 void UITask::dispatchInput() {
   // any input wakes the display
   uint8_t k = hw.readKey();
+  if (k) Serial.printf("[kbd] raw=%u\n", k);   // diagnostics: what the keyboard sends
+
+  // Software number/symbol layer. The stock keyboard chip's Alt key does NOT
+  // emit numbers on many T-Deck units, so we provide our own. Alt+C reaches us
+  // as 0x0C and toggles the layer; when active, letters map to their printed
+  // number/symbol. (Settings text fields also toggle it with the trackball.)
+  if (k == 0x0C) {
+    _sym_shift = !_sym_shift;
+    toast(_sym_shift ? "123 / symbols ON" : "letters", _sym_shift ? C_ACCENT : C_FG_DIM);
+    _dirty = true;
+    k = 0;
+  }
+  if (k && _sym_shift) k = symMap(k);
   NavEvent nv = hw.readNav();
   TouchEvent te;
   bool has_touch = hw.readTouch(te);

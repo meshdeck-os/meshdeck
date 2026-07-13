@@ -93,6 +93,11 @@ void SettingsScreen::draw() {
       c.setCursor(SCREEN_W - 124, y + 4);
       c.print(_edit);
       c.fillRect(SCREEN_W - 124 + _elen * 6 + 1, y + 3, 2, 10, C_ACCENT);
+      if (ui.symShift()) {          // number/symbol layer active
+        c.setTextColor(C_CYAN);
+        c.setCursor(SCREEN_W - 26, y + 4);
+        c.print("123");
+      }
     } else {
       c.setTextColor(sel ? C_ACCENT : C_FG_FAINT);
       c.setCursor(SCREEN_W - 8 - strlen(v) * 6, y + 4);
@@ -103,7 +108,11 @@ void SettingsScreen::draw() {
   // hint bar
   c.setTextColor(C_FG_FAINT);
   c.setCursor(6, SCREEN_H - 10);
-  if (_editing) c.print("type value, enter = apply");
+  if (_editing) {
+    c.setTextColor(ui.symShift() ? C_CYAN : C_FG_FAINT);
+    c.print(ui.symShift() ? "123 mode (ball=letters)  enter=apply"
+                          : "roll ball for 123/symbols  enter=apply");
+  }
   else if (_sel == SI_TBSPEED) {
     // live input test: roll the ball, click it, press keys - watch this update
     bool btn, touch; int px, py; uint8_t key;
@@ -345,6 +354,10 @@ bool SettingsScreen::nav(NavEvent e) {
   if (_editing) {
     if (e == NAV_SELECT) { applyEdit(); return true; }
     if (e == NAV_BACK) { _editing = false; return true; }
+    // roll the trackball up/down to switch the number/symbol layer (guaranteed
+    // to work even if the keyboard's Alt key doesn't): up = 123, down = letters
+    if (e == NAV_UP   && !ui.symShift()) ui.toggleSym();
+    if (e == NAV_DOWN &&  ui.symShift()) ui.toggleSym();
     return true;
   }
   switch (e) {

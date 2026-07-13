@@ -200,6 +200,10 @@ public:
   void fmtAgo(char* out, size_t sz, uint32_t epoch_then) const;
   void drawStatusBar(const char* title);
 
+  // number/symbol entry layer (works regardless of the keyboard chip's alt key)
+  void toggleSym() { _sym_shift = !_sym_shift; _dirty = true; }
+  bool symShift() const { return _sym_shift; }
+
   ContactInfo* contactByPrefix(const uint8_t* prefix6);
 
 private:
@@ -253,6 +257,9 @@ private:
   char _wifi_ssid[33] = "";
   char _wifi_pass[65] = "";
   bool _wifi_want = false;
+
+  // number/symbol layer state (see dispatchInput)
+  bool _sym_shift = false;
 
   // serial terminal input
   char _ser_line[96];

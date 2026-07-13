@@ -84,6 +84,27 @@ void HomeScreen::draw() {
   c.setCursor(8, 26);
   c.print("mesh");
 
+  // GPS status (green = fix with coords, yellow = searching, faint = off)
+  {
+    char g[36];
+    uint16_t gcol;
+    if (ui.prefs && ui.prefs->gps_enabled) {
+      if (ui.gpsFix() && ui.sensors) {
+        snprintf(g, sizeof(g), "GPS %.4f,%.4f", ui.sensors->node_lat, ui.sensors->node_lon);
+        gcol = C_GREEN;
+      } else {
+        strcpy(g, "GPS searching...");
+        gcol = C_YELLOW;
+      }
+    } else {
+      strcpy(g, "GPS off");
+      gcol = C_FG_FAINT;
+    }
+    c.setTextColor(gcol);
+    c.setCursor(8, 38);
+    c.print(g);
+  }
+
   // app grid 4x3
   for (int i = 0; i < N_APPS; i++) {
     int gx = GRID_X0 + (i % 3) * CELL_W;
