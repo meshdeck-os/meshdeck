@@ -1,0 +1,74 @@
+uk|United Kingdom & Ireland
+ie|Ireland
+fr|France
+es|Spain & Portugal
+pt|Portugal
+de|Germany
+nl|Netherlands & Belgium
+it|Italy
+ch|Switzerland & Austria
+pl|Poland
+cz|Czechia & Slovakia
+dk|Denmark
+no|Norway
+se|Sweden
+fi|Finland
+is|Iceland
+gr|Greece
+hr|Balkans (W)
+ro|Romania & Bulgaria
+hu|Hungary
+ua|Ukraine
+tr|Turkey
+ee|Baltic States
+ruw|Russia (West)
+rue|Russia (East)
+il|Levant
+sa|Arabia
+ir|Iran
+iq|Iraq & Syria
+ma|Morocco & Algeria
+eg|Egypt
+ng|West Africa
+cd|Central Africa
+ke|East Africa
+et|Horn of Africa
+za|Southern Africa
+mg|Madagascar
+in|India
+pk|Pakistan & Afghanistan
+cn|China (East)
+cnw|China (West)
+jp|Japan
+kr|Korea
+th|Thailand & Indochina
+vn|Vietnam
+my|Malaysia & Singapore
+id|Indonesia (W)
+ide|Indonesia (E) & PNG
+ph|Philippines
+bd|Bangladesh & Myanmar
+kz|Central Asia
+auw|Australia (West)
+aue|Australia (East)
+nz|New Zealand
+fj|Pacific Islands
+usw|USA (West)
+use|USA (East)
+usak|Alaska
+ca|Canada (South)
+can|Canada (North)
+mx|Mexico
+cam|Central America
+cu|Caribbean
+gl|Greenland
+br|Brazil
+ar|Argentina & Chile
+co|Colombia & Venezuela
+pe|Peru & Bolivia
+z_eu|All Europe
+z_af|All Africa
+z_as|All Asia
+z_na|All North America
+z_sa|All South America
+z_oc|All Oceania
