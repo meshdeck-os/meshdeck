@@ -17,7 +17,7 @@ class UITask;
 enum ScreenId : uint8_t {
   SCR_HOME = 0, SCR_CHAT, SCR_CONTACTS, SCR_MAP, SCR_LASTHEARD, SCR_REPEATERS,
   SCR_TRACE, SCR_NOISE, SCR_TERMINAL, SCR_SETTINGS, SCR_QR,
-  SCR_ONBOARD, SCR_DIAG, SCR_SOS, SCR_MAPDL, SCR_WIFI, SCR_COUNT
+  SCR_ONBOARD, SCR_DIAG, SCR_SOS, SCR_MAPDL, SCR_WIFI, SCR_CHANNELS, SCR_COUNT
 };
 
 class Screen {
@@ -161,6 +161,12 @@ public:
   bool sendDM(const uint8_t* pub_prefix, const char* text);       // to contact by 6-byte prefix
   bool sendChannel(uint8_t channel_idx, const char* text);
   void openThread(int thread_idx);                                // jumps to chat screen
+
+  // channels
+  int  channelCount();
+  bool channelNameAt(int idx, char* out, size_t sz);
+  void openChannel(int channel_idx);                              // open that channel's chat thread
+  bool addChannelNamed(const char* name, const char* psk_base64); // join/create by name + key
   void openQR(const char* url);
   int  pendingThread() const { return _pending_thread; }
   void clearPendingThread() { _pending_thread = -1; }

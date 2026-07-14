@@ -275,3 +275,25 @@ private:
   char _edit[68];
   int  _elen = 0;
 };
+
+// ---------------------------------------------------------------- Channels
+
+class ChannelsScreen : public Screen {
+public:
+  ChannelsScreen(UITask& u) : Screen(u) {}
+  void enter() override;
+  void draw() override;
+  bool key(uint8_t c) override;
+  bool nav(NavEvent e) override;
+  bool touch(const TouchEvent& e) override;
+private:
+  void select();
+  void applyEdit();
+  int  _n = 0;               // channel count (refreshed on enter/draw)
+  int  _sel = 0, _top = 0;
+  bool _adding = false;
+  int  _phase = 0;           // 0 = enter name, 1 = enter key
+  char _newname[32];
+  char _edit[68];
+  int  _elen = 0;
+};

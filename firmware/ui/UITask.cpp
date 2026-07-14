@@ -250,6 +250,7 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
   _screens[SCR_SOS]       = new SOSScreen(*this);
   _screens[SCR_MAPDL]     = new MapDownloadScreen(*this);
   _screens[SCR_WIFI]      = new WifiScreen(*this);
+  _screens[SCR_CHANNELS]  = new ChannelsScreen(*this);
 
   termLog(C_TERM_SYS, "MeshDeck v%s on MeshCore %s", MESHDECK_VERSION, FIRMWARE_VERSION);
   // NOTE: format the floats separately - StrHelper::ftoa returns a shared static
@@ -370,6 +371,44 @@ void UITask::openThread(int thread_idx) {
   _pending_thread = thread_idx;
   if (_cur != SCR_CHAT) go(SCR_CHAT);
   else { _screens[SCR_CHAT]->enter(); _dirty = true; }
+}
+
+// ---- channels ----
+int UITask::channelCount() {
+  if (!mesh) return 0;
+  int n = 0;
+  ChannelDetails ch;
+  while (n < MAX_GROUP_CHANNELS && mesh->getChannel(n, ch)) n++;
+  return n;
+}
+
+bool UITask::channelNameAt(int idx, char* out, size_t sz) {
+  ChannelDetails ch;
+  if (!mesh || !mesh->getChannel(idx, ch)) return false;
+  StrHelper::strncpy(out, ch.name, sz);
+  return true;
+}
+
+void UITask::openChannel(int channel_idx) {
+  ChannelDetails ch;
+  if (!mesh || !mesh->getChannel(channel_idx, ch)) { toast("No such channel", C_RED); return; }
+  DeckThread* t = store.forChannel((uint8_t)channel_idx, ch.name);
+  if (t) openThread(store.indexOf(t));
+}
+
+bool UITask::addChannelNamed(const char* name, const char* psk_base64) {
+  if (!mesh) return false;
+  // pad base64 to a multiple of 4 with '=' (the keyboard can't type '=')
+  char psk[68];
+  StrHelper::strncpy(psk, psk_base64, sizeof(psk));
+  int n = strlen(psk);
+  while ((n % 4) != 0 && n < (int)sizeof(psk) - 1) psk[n++] = '=';
+  psk[n] = 0;
+  ChannelDetails* c = mesh->addChannel(name[0] ? name : "channel", psk);
+  if (!c) { toast("Channel add failed (full?)", C_RED); return false; }
+  mesh->saveChannels();
+  toast("Channel added", C_GREEN);
+  return true;
 }
 
 void UITask::openQR(const char* url) {

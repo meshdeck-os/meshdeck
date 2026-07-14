@@ -3,7 +3,7 @@
 #include <RTClib.h>
 
 struct AppDef { const char* label; ScreenId scr; uint16_t color; char glyph; bool disc; };
-#define N_APPS 13
+#define N_APPS 14
 static const AppDef APPS[N_APPS] = {
   { "Chat",      SCR_CHAT,      C_ACCENT, 'C', false },
   { "Contacts",  SCR_CONTACTS,  C_GREEN,  '@', false },
@@ -18,6 +18,7 @@ static const AppDef APPS[N_APPS] = {
   { "SOS",       SCR_SOS,       C_RED,    '!', false },
   { "Settings",  SCR_SETTINGS,  C_FG_DIM, 'S', false },
   { "WiFi",      SCR_WIFI,      C_ACCENT, 'W', false },
+  { "Channels",  SCR_CHANNELS,  C_ORANGE, '#', false },
 };
 
 // grid layout: 5 rows x 3 cols
