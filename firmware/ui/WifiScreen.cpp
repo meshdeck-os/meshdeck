@@ -20,8 +20,44 @@ void WifiScreen::enter() {
 void WifiScreen::draw() {
   GFXcanvas16& c = ui.cv();
   c.fillScreen(C_BG);
-  ui.drawStatusBar("WiFi");
   c.setTextSize(1);
+
+  // network picker (after a scan)
+  if (_picking) {
+    ui.drawStatusBar("Choose WiFi");
+    const int PY0 = STATUS_H + 6, PH = 20;
+    const int PVIS = (SCREEN_H - PY0 - 14) / PH;
+    int total = _nscan + 1;                 // row 0 = manual entry
+    if (_psel < _ptop) _ptop = _psel;
+    if (_psel >= _ptop + PVIS) _ptop = _psel - PVIS + 1;
+    for (int r = _ptop; r < total && r < _ptop + PVIS; r++) {
+      int y = PY0 + (r - _ptop) * PH;
+      bool sel = r == _psel;
+      if (sel) c.fillRoundRect(4, y - 1, SCREEN_W - 8, PH - 3, 5, C_BG_RAISED);
+      c.setCursor(12, y + 4);
+      if (r == 0) {
+        c.setTextColor(sel ? C_ACCENT : C_FG_DIM);
+        c.print("Enter name manually");
+      } else {
+        int i = r - 1;
+        char nm[24]; ellipsize(nm, 20, _scan[i]);
+        c.setTextColor(sel ? C_FG : C_FG_DIM);
+        c.print(nm);
+        int rssi = _scan_rssi[i];
+        int bars = rssi > -60 ? 4 : rssi > -68 ? 3 : rssi > -76 ? 2 : rssi > -85 ? 1 : 0;
+        for (int b = 0; b < 4; b++) {
+          int bh = 3 + b * 3;
+          c.fillRect(SCREEN_W - 26 + b * 5, y + 13 - bh, 3, bh, b < bars ? C_ACCENT : C_FG_FAINT);
+        }
+      }
+    }
+    c.setTextColor(C_FG_FAINT);
+    c.setCursor(6, SCREEN_H - 10);
+    c.print("up/down choose   enter = use   back = cancel");
+    return;
+  }
+
+  ui.drawStatusBar("WiFi");
   int ws = ui.wifiState();
 
   // big status banner
@@ -87,11 +123,49 @@ void WifiScreen::draw() {
   }
 }
 
-void WifiScreen::select() {
-  if (_sel == 0) {
-    _editing = true;
+void WifiScreen::doScan() {
+  ui.toast("Scanning WiFi...", C_CYAN);
+  WiFi.mode(WIFI_STA);
+  int n = WiFi.scanNetworks();
+  _nscan = 0;
+  for (int i = 0; i < n && _nscan < 16; i++) {
+    String s = WiFi.SSID(i);
+    if (s.length() == 0) continue;
+    bool dup = false;
+    for (int j = 0; j < _nscan; j++) if (strcmp(_scan[j], s.c_str()) == 0) { dup = true; break; }
+    if (dup) continue;
+    StrHelper::strncpy(_scan[_nscan], s.c_str(), 33);
+    _scan_rssi[_nscan] = (int8_t)WiFi.RSSI(i);
+    _nscan++;
+  }
+  WiFi.scanDelete();
+  _psel = 0; _ptop = 0;
+  _picking = true;
+}
+
+void WifiScreen::pickSelect() {
+  if (_psel == 0) {                 // manual entry
+    _picking = false;
+    _sel = 0; _editing = true;
     StrHelper::strncpy(_edit, ui.wifiSsid(), sizeof(_edit));
     _elen = strlen(_edit);
+  } else {
+    int i = _psel - 1;
+    if (i >= 0 && i < _nscan) {
+      StrHelper::strncpy(ui.wifiSsid(), _scan[i], 33);
+      ui.saveWifi();
+    }
+    _picking = false;
+    _sel = 1; _editing = true;       // jump straight to the password
+    StrHelper::strncpy(_edit, ui.wifiPass(), sizeof(_edit));
+    _elen = strlen(_edit);
+    ui.toast("Enter the password", C_ACCENT);
+  }
+}
+
+void WifiScreen::select() {
+  if (_sel == 0) {
+    doScan();                        // scan nearby networks and pick one
   } else if (_sel == 1) {
     _editing = true;
     StrHelper::strncpy(_edit, ui.wifiPass(), sizeof(_edit));
@@ -124,6 +198,11 @@ void WifiScreen::applyEdit() {
 }
 
 bool WifiScreen::key(uint8_t k) {
+  if (_picking) {
+    if (k == 0x0D) { pickSelect(); return true; }
+    if (k == 0x08 || k == 0x7F || k == 0x1B) { _picking = false; return true; }
+    return true;
+  }
   if (_editing) {
     if (k == 0x0D) { applyEdit(); return true; }
     if (k == 0x08 || k == 0x7F) {
@@ -139,6 +218,16 @@ bool WifiScreen::key(uint8_t k) {
 }
 
 bool WifiScreen::nav(NavEvent e) {
+  if (_picking) {
+    int total = _nscan + 1;
+    switch (e) {
+      case NAV_UP:     if (_psel > 0) _psel--; return true;
+      case NAV_DOWN:   if (_psel < total - 1) _psel++; return true;
+      case NAV_SELECT: pickSelect(); return true;
+      case NAV_BACK:   _picking = false; return true;
+      default: return true;
+    }
+  }
   if (_editing) {
     if (e == NAV_SELECT) { applyEdit(); return true; }
     if (e == NAV_BACK) { _editing = false; return true; }
@@ -155,6 +244,14 @@ bool WifiScreen::nav(NavEvent e) {
 }
 
 bool WifiScreen::touch(const TouchEvent& e) {
+  if (_picking) {
+    if (e.kind != TouchEvent::TAP) return false;
+    const int PY0 = STATUS_H + 6, PH = 20;
+    if (e.y < PY0) return false;
+    int r = _ptop + (e.y - PY0) / PH;
+    if (r >= 0 && r < _nscan + 1) { _psel = r; pickSelect(); return true; }
+    return false;
+  }
   if (_editing) return false;
   if (e.kind != TouchEvent::TAP) return false;
   if (e.y < W_ROW_Y0) return false;

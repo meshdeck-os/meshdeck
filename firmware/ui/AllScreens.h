@@ -270,10 +270,18 @@ public:
 private:
   void select();
   void applyEdit();
-  int  _sel = 0;             // 0 = SSID, 1 = password, 2 = connect/disconnect
+  void doScan();             // scan nearby networks -> pick list
+  void pickSelect();
+  int  _sel = 0;             // 0 = SSID, 1 = password, 2 = connect, 3 = remote screen
   bool _editing = false;
   char _edit[68];
   int  _elen = 0;
+  // network scan / picker
+  bool _picking = false;
+  int  _nscan = 0;
+  char _scan[16][33];
+  int8_t _scan_rssi[16];
+  int  _psel = 0, _ptop = 0;
 };
 
 // ---------------------------------------------------------------- Channels
