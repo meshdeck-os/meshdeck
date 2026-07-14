@@ -89,7 +89,7 @@ void UITask::startRemoteScreen() {
     // Stream the framebuffer in small chunks, yielding between each so the
     // LoRa mesh loop and the RTOS watchdog keep running (a single 150 KB
     // blocking write starves the radio and resets the device).
-    WiFiClient& client = _web->client();
+    WiFiClient client = _web->client();
     const uint8_t* buf = (const uint8_t*)c.getBuffer();
     size_t sent = 0;
     const size_t CHUNK = 1460;                 // ~one TCP segment
