@@ -267,6 +267,11 @@ private:
   // number/symbol layer state (see dispatchInput)
   bool _sym_shift = false;
 
+  // NTP clock sync over WiFi
+  bool _ntp_started = false;
+  bool _ntp_done = false;
+  uint32_t _ntp_last_try = 0;
+
   // serial terminal input
   char _ser_line[96];
   int _ser_len = 0;

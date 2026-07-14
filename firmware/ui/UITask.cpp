@@ -10,6 +10,7 @@
 #include <math.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <time.h>
 #include <HTTPClient.h>
 #include <SD.h>
 
@@ -810,6 +811,27 @@ void UITask::loop() {
   // SOS beacon: repeat an SOS + latest position until cancelled
   if (_sos_active && millis() - _sos_last > 120000UL) {
     sendSOSNow();
+  }
+
+  // NTP clock sync: when WiFi is connected, fetch UTC once and set the RTC.
+  // The RTC stays in UTC; the home clock applies the timezone offset for display.
+  if (wifiState() == 2) {
+    if (!_ntp_started) {
+      configTime(0, 0, "pool.ntp.org", "time.nist.gov");   // 0 offset = UTC
+      _ntp_started = true;
+      _ntp_last_try = millis();
+    } else if (!_ntp_done && millis() - _ntp_last_try > 500) {
+      _ntp_last_try = millis();
+      time_t now = time(nullptr);
+      if (now > 1700000000) {                 // valid epoch (after Nov 2023)
+        if (mesh) mesh->getRTCClock()->setCurrentTime((uint32_t)now);
+        _ntp_done = true;
+        toast("Clock synced (NTP)", C_GREEN);
+      }
+    }
+  } else {
+    _ntp_started = false;   // re-sync on the next WiFi connection
+    _ntp_done = false;
   }
 
   // USB serial -> terminal commands
