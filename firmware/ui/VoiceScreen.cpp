@@ -88,31 +88,37 @@ static bool es7210_init() {
                 found ? "FOUND" : "no ACK on 0x40-0x43", g_es_addr);
   if (!found) return false;
 
-  // LilyGo es7210.cpp init (16-bit / 16 kHz / slave / MIC1+MIC2, 0 dB base gain)
-  es_w(0x00, 0xFF);            // reset
-  es_w(0x00, 0x41);            // release reset
-  es_w(0x01, 0x1F);            // clock manager: clocks on
-  es_w(0x09, 0x30);            // TIME_CONTROL0
-  es_w(0x0A, 0x30);            // TIME_CONTROL1
-  es_w(0x40, 0xC3);            // ANALOG: power up
-  es_w(0x41, 0x70);            // MIC12 bias
-  es_w(0x42, 0x70);            // MIC34 bias
-  es_w(0x07, 0x20);            // OSR
-  es_w(0x02, 0xC1);            // main clock: MCLK=256fs @ 16 kHz
-  es_w(0x04, 0x01);            // sample-rate coeff (16 kHz)
-  es_w(0x05, 0x00);
-  es_w(0x06, 0x04);
-  es_w(0x11, 0x60);            // SDP out: I2S, 16-bit
-  es_w(0x12, 0x00);
-  es_w(0x43, 0x1E);            // MIC1 gain (bump later if quiet)
-  es_w(0x44, 0x1E);            // MIC2 gain
-  es_w(0x14, 0x00);            // MIC1+MIC2 select, TDM off
-  es_w(0x0B, 0x00);            // run
-  es_w(0x00, 0x71);
-  es_w(0x00, 0x41);
+  // Full LilyGo es7210.cpp bring-up (16-bit / 16 kHz / slave / MIC1+MIC2).
+  // The previous condensed version left the analog path powered DOWN (reg 0x4B
+  // resets to 0xFF = mic bias + ADC + PGA all off), so capture returned pure
+  // zeros. The 0x4B=0x00 / 0x47/0x48=0x00 / 0x06=0x00 / 0x01=0x14 writes below
+  // are the power-ups that were missing.
+  es_w(0x00, 0xFF); es_w(0x00, 0x41);   // reset, release
+  es_w(0x01, 0x1F);                      // clock manager (fixed up to 0x14 below)
+  es_w(0x09, 0x30); es_w(0x0A, 0x30);    // time control 0/1
+  es_w(0x40, 0xC3);                      // analog: VMID / vdda
+  es_w(0x41, 0x70); es_w(0x42, 0x70);    // mic bias 1/2, 3/4
+  es_w(0x07, 0x20);                      // OSR
+  es_w(0x02, 0xC1);                      // main clock: adc_div=1, doubler, dll (16k, 256fs)
+  es_w(0x04, 0x01); es_w(0x05, 0x00);    // LRCK divider (16 kHz)
+  es_w(0x11, 0x60); es_w(0x12, 0x00);    // SDP out: I2S, 16-bit
+  // ---- mic_select(MIC1|MIC2): the analog power-up ----
+  es_w(0x43, 0x00); es_w(0x44, 0x00); es_w(0x45, 0x00); es_w(0x46, 0x00);
+  es_w(0x4B, 0xFF); es_w(0x4C, 0xFF);    // transient power-down
+  es_w(0x01, 0x14);                      // enable ADC1/2 clocks (clear 0x0B mask)
+  es_w(0x4B, 0x00);                      // *** MIC1/2 bias + ADC + PGA POWER ON ***
+  es_w(0x43, 0x10); es_w(0x44, 0x10);    // MIC1/MIC2 enable bit4
+  // ---- gain: ~30 dB for a clear first test (low nibble; 0x0A=30dB) ----
+  es_w(0x43, 0x1A); es_w(0x44, 0x1A);
+  // ---- start(): final power-up needed for capture ----
+  es_w(0x06, 0x00);                      // power-down register: fully up
+  es_w(0x47, 0x00); es_w(0x48, 0x00);    // MIC1/MIC2 individual power on
+  es_w(0x49, 0x00); es_w(0x4A, 0x00);
+  es_w(0x4B, 0x00); es_w(0x4C, 0xFF);    // re-assert MIC1/2 on, 3/4 off
 
-  uint8_t r0 = es_r(0x00);     // sanity readback (not an id, just confirms reads work)
-  Serial.printf("[voice] ES7210 inited @ 0x%02X, reg00 readback = 0x%02X\n", g_es_addr, r0);
+  uint8_t r0 = es_r(0x00), r4b = es_r(0x4B), r06 = es_r(0x06);
+  Serial.printf("[voice] ES7210 inited @ 0x%02X, reg00=0x%02X reg4B=0x%02X(pwr) reg06=0x%02X\n",
+                g_es_addr, r0, r4b, r06);
   return true;
 }
 
