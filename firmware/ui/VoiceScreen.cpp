@@ -20,7 +20,13 @@
 #include <esp_heap_caps.h>
 
 // ---- ES7210 mic (I2C control) ----
-#define ES_ADDR        0x40
+// Per LilyGo's T-Deck source the ES7210 lives on the SAME Wire bus as the
+// keyboard/touch (SDA=18, SCL=8) at 7-bit address 0x40 (strap options 0x40..0x43).
+// The chip has NO chip-id register - presence is a plain address ACK, and reg
+// 0x40..0x4C are the chip's own analog/gain registers (they just happen to
+// overlap the number 0x40). The old code read 0xFD/0xFE (that's the ES8311's
+// id) so it could never pass.
+static uint8_t g_es_addr = 0x40;   // resolved by the address probe below
 // ES7210 mic I2S bus (separate from the speaker bus)
 #define ES_MCLK        48
 #define ES_SCK         47
@@ -33,54 +39,81 @@
 #define BOARD_POWERON  10
 
 static void es_w(uint8_t reg, uint8_t val) {
-  Wire.beginTransmission(ES_ADDR);
+  Wire.beginTransmission(g_es_addr);
   Wire.write(reg); Wire.write(val);
   Wire.endTransmission();
 }
 static uint8_t es_r(uint8_t reg) {
-  Wire.beginTransmission(ES_ADDR);
+  Wire.beginTransmission(g_es_addr);
   Wire.write(reg);
-  Wire.endTransmission(false);
-  Wire.requestFrom((uint8_t)ES_ADDR, (uint8_t)1);
-  return Wire.available() ? Wire.read() : 0xFF;
+  if (Wire.endTransmission(false) != 0) return 0xFF;    // repeated start
+  if (Wire.requestFrom((uint8_t)g_es_addr, (uint8_t)1) != 1) return 0xFF;
+  return Wire.read();
 }
 
-// Best-effort ES7210 init for 16 kHz / 16-bit / I2S, mic1+mic2 enabled.
-// Register values are datasheet facts; the exact set is what we tune via serial.
+// Ground truth: log every device that ACKs on the shared I2C bus. We should see
+// the keyboard (0x55) and touch (0x14 or 0x5D); the ES7210 should show 0x40..0x43.
+static void i2c_scan() {
+  Serial.println("[voice] I2C scan (shared bus SDA18/SCL8):");
+  int n = 0;
+  for (uint8_t a = 1; a < 0x77; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) {
+      const char* who = (a == 0x55) ? " (keyboard)"
+                      : (a == 0x14 || a == 0x5D) ? " (touch GT911)"
+                      : (a >= 0x40 && a <= 0x43) ? " (ES7210 mic?)" : "";
+      Serial.printf("[voice]   0x%02X ACK%s\n", a, who);
+      n++;
+    }
+  }
+  Serial.printf("[voice] scan done: %d device(s)\n", n);
+}
+
+// Init the ES7210 for 16 kHz / 16-bit / I2S, slave mode, MIC1+MIC2.
+// Register sequence follows LilyGo's es7210.cpp. Returns true if the codec ACKs.
 static bool es7210_init() {
   pinMode(BOARD_POWERON, OUTPUT);
-  digitalWrite(BOARD_POWERON, HIGH);
-  delay(10);
+  digitalWrite(BOARD_POWERON, HIGH);   // gates the whole peripheral rail
+  delay(50);
 
-  uint8_t id1 = es_r(0xFD), id2 = es_r(0xFE);   // chip id: expect 0x72, 0x10
-  Serial.printf("[voice] ES7210 chip id = 0x%02X 0x%02X (expect 0x72 0x10)\n", id1, id2);
+  i2c_scan();
 
-  es_w(0x00, 0xFF); delay(5);   // reset
-  es_w(0x00, 0x32);             // release reset / power up
-  es_w(0x01, 0x3F);             // enable clocks
-  es_w(0x02, 0x00);
-  es_w(0x03, 0x03);
-  es_w(0x04, 0x03);
+  // Presence = plain address ACK (no chip-id). Probe the four strap addresses.
+  bool found = false;
+  for (uint8_t a = 0x40; a <= 0x43; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) { g_es_addr = a; found = true; break; }
+  }
+  Serial.printf("[voice] ES7210 probe: %s (using 0x%02X)\n",
+                found ? "FOUND" : "no ACK on 0x40-0x43", g_es_addr);
+  if (!found) return false;
+
+  // LilyGo es7210.cpp init (16-bit / 16 kHz / slave / MIC1+MIC2, 0 dB base gain)
+  es_w(0x00, 0xFF);            // reset
+  es_w(0x00, 0x41);            // release reset
+  es_w(0x01, 0x1F);            // clock manager: clocks on
+  es_w(0x09, 0x30);            // TIME_CONTROL0
+  es_w(0x0A, 0x30);            // TIME_CONTROL1
+  es_w(0x40, 0xC3);            // ANALOG: power up
+  es_w(0x41, 0x70);            // MIC12 bias
+  es_w(0x42, 0x70);            // MIC34 bias
+  es_w(0x07, 0x20);            // OSR
+  es_w(0x02, 0xC1);            // main clock: MCLK=256fs @ 16 kHz
+  es_w(0x04, 0x01);            // sample-rate coeff (16 kHz)
+  es_w(0x05, 0x00);
   es_w(0x06, 0x04);
-  es_w(0x07, 0x20);
-  es_w(0x08, 0x14);
-  es_w(0x09, 0x30);
-  es_w(0x0A, 0x30);
-  es_w(0x0B, 0x00);
-  es_w(0x11, 0x60);             // SDP format: I2S, 16-bit
+  es_w(0x11, 0x60);            // SDP out: I2S, 16-bit
   es_w(0x12, 0x00);
-  es_w(0x40, 0x42);             // analog / vmid
-  es_w(0x41, 0x70);             // mic bias 1/2
-  es_w(0x42, 0x70);
-  es_w(0x43, 0x1E);             // mic1 gain
-  es_w(0x44, 0x1E);             // mic2 gain
-  es_w(0x47, 0x08);
-  es_w(0x48, 0x08);
-  es_w(0x4B, 0x00);             // power on ADC
-  es_w(0x4C, 0x00);
+  es_w(0x43, 0x1E);            // MIC1 gain (bump later if quiet)
+  es_w(0x44, 0x1E);            // MIC2 gain
+  es_w(0x14, 0x00);            // MIC1+MIC2 select, TDM off
+  es_w(0x0B, 0x00);            // run
   es_w(0x00, 0x71);
-  es_w(0x00, 0x41);             // run
-  return (id1 == 0x72 && id2 == 0x10);
+  es_w(0x00, 0x41);
+
+  uint8_t r0 = es_r(0x00);     // sanity readback (not an id, just confirms reads work)
+  Serial.printf("[voice] ES7210 inited @ 0x%02X, reg00 readback = 0x%02X\n", g_es_addr, r0);
+  return true;
 }
 
 static void mic_i2s_start() {
@@ -137,7 +170,7 @@ void VoiceScreen::enter() {
     _cap = _buf ? VOICE_CAP : 0;
   }
   _hwok = es7210_init();
-  strcpy(_status, _hwok ? "mic ready - ENTER to record" : "mic id FAIL - see serial");
+  strcpy(_status, _hwok ? "mic ready - ENTER to record" : "mic not on I2C - see scan log");
 #else
   strcpy(_status, "beta build only");
 #endif
