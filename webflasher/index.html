@@ -69,6 +69,21 @@
 </div>
 
 <div class="card">
+  <h2>Beta channel <span class="tag">experimental</span></h2>
+  <p class="sub">Early builds with in-progress features (currently: audio / voice
+  proof-of-concept). Rougher and may be unstable &mdash; for testers who want to
+  help. The stable build above is the safe default.</p>
+  <div class="btnrow">
+    <esp-web-install-button manifest="manifest-beta.json">
+      <button slot="activate">Flash MeshDeck (beta)</button>
+      <span slot="unsupported" class="unsupported" style="display:inline">
+        This browser can't flash devices &mdash; use Chrome or Edge on a computer.
+      </span>
+    </esp-web-install-button>
+  </div>
+</div>
+
+<div class="card">
   <h2>How to flash</h2>
   <ol>
     <li>Plug the T-Deck into this computer with a <b>USB-C data cable</b> and switch it <b>on</b>.</li>

@@ -1,0 +1,14 @@
+{
+  "name": "MeshDeck OS (beta)",
+  "version": "1.0.0-beta",
+  "home_assistant_domain": "",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "meshdeck-full-beta.bin", "offset": 0 }
+      ]
+    }
+  ]
+}
