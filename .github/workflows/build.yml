@@ -28,8 +28,12 @@ jobs:
           cp -r firmware/* build/meshcore/examples/meshdeck/
           cp platformio.local.ini build/meshcore/platformio.local.ini
 
-      - name: Compile
+      - name: Compile (stable)
         run: cd build/meshcore && pio run -e MeshDeck_TDeck_868
+
+      - name: Compile (beta, non-blocking)
+        continue-on-error: true
+        run: cd build/meshcore && pio run -e MeshDeck_TDeck_868_beta
 
       - name: Create single flashable image
         run: |
@@ -42,6 +46,19 @@ jobs:
             0xe000 $BOOT_APP0 \
             0x10000 $B/firmware.bin
           cp $B/firmware.bin meshdeck.bin
+          # beta channel image (only if the beta build succeeded)
+          Bb=build/meshcore/.pio/build/MeshDeck_TDeck_868_beta
+          if [ -f "$Bb/firmware.bin" ]; then
+            python -m esptool --chip esp32s3 merge_bin -o meshdeck-full-beta.bin \
+              --flash_mode dio --flash_freq 80m --flash_size 16MB \
+              0x0 $Bb/bootloader.bin \
+              0x8000 $Bb/partitions.bin \
+              0xe000 $BOOT_APP0 \
+              0x10000 $Bb/firmware.bin
+            cp $Bb/firmware.bin meshdeck-beta.bin
+          else
+            echo "beta build unavailable - skipping beta image"
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -54,9 +71,11 @@ jobs:
       - name: Prepare web flasher site
         run: |
           mkdir -p site
-          cp webflasher/index.html webflasher/manifest.json site/
+          cp webflasher/index.html webflasher/manifest.json webflasher/manifest-beta.json site/
           cp meshdeck-full.bin site/
           cp meshdeck.bin site/          # app image for SD-card updates (firmware.bin)
+          # beta channel (only present if the beta build succeeded)
+          [ -f meshdeck-full-beta.bin ] && cp meshdeck-full-beta.bin meshdeck-beta.bin site/ || true
           # Downloadable SD map packs + region index (fetched over WiFi by the firmware)
           if ls sdcard/meshdeck-maps/*.mdm >/dev/null 2>&1; then
             mkdir -p site/maps
