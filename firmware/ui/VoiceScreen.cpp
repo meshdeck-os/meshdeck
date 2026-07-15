@@ -133,7 +133,7 @@ static void mic_i2s_start() {
   cfg.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
   cfg.dma_buf_count = 8;
   cfg.dma_buf_len = 64;                             // match LilyGo
-  cfg.use_apll = false;
+  cfg.use_apll = true;                              // APLL synthesizes an exact 4.096 MHz MCLK
   cfg.tx_desc_auto_clear = true;
   cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
   cfg.bits_per_chan = I2S_BITS_PER_CHAN_16BIT;
@@ -223,6 +223,9 @@ void VoiceScreen::record() {
   _peak = peak;
   _rms = _len ? (int)sqrt((double)(acc / _len)) : 0;
   Serial.printf("[voice] captured %d samples (%u bytes), peak=%d rms=%d\n", _len, (unsigned)got, _peak, _rms);
+  Serial.printf("[voice] first8 hex:");
+  for (int i = 0; i < 8 && i < _len; i++) Serial.printf(" %04X", (uint16_t)_buf[i]);
+  Serial.printf("\n");
   snprintf(_status, sizeof(_status), "got %d smp  peak %d", _len, _peak);
 #endif
 }
