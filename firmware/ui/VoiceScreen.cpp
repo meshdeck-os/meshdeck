@@ -69,16 +69,16 @@ static void i2c_scan() {
   Serial.printf("[voice] scan done: %d device(s)\n", n);
 }
 
-// Init the ES7210 for 16 kHz / 16-bit / I2S, slave mode, MIC1+MIC2.
-// Register sequence follows LilyGo's es7210.cpp. Returns true if the codec ACKs.
-static bool es7210_init() {
+// Power the rail, scan the bus, and resolve the ES7210 address. No register
+// writes here - the codec is a SLAVE and must be configured while its MCLK is
+// running, which only happens once the I2S driver is started (see record()).
+static bool es7210_probe() {
   pinMode(BOARD_POWERON, OUTPUT);
   digitalWrite(BOARD_POWERON, HIGH);   // gates the whole peripheral rail
   delay(50);
 
   i2c_scan();
 
-  // Presence = plain address ACK (no chip-id). Probe the four strap addresses.
   bool found = false;
   for (uint8_t a = 0x40; a <= 0x43; a++) {
     Wire.beginTransmission(a);
@@ -86,13 +86,13 @@ static bool es7210_init() {
   }
   Serial.printf("[voice] ES7210 probe: %s (using 0x%02X)\n",
                 found ? "FOUND" : "no ACK on 0x40-0x43", g_es_addr);
-  if (!found) return false;
+  return found;
+}
 
-  // Full LilyGo es7210.cpp bring-up (16-bit / 16 kHz / slave / MIC1+MIC2).
-  // The previous condensed version left the analog path powered DOWN (reg 0x4B
-  // resets to 0xFF = mic bias + ADC + PGA all off), so capture returned pure
-  // zeros. The 0x4B=0x00 / 0x47/0x48=0x00 / 0x06=0x00 / 0x01=0x14 writes below
-  // are the power-ups that were missing.
+// Configure the ES7210 for 16 kHz / 16-bit / I2S slave, MIC1+MIC2.
+// MUST be called AFTER the I2S master (MCLK) is running - the ADC clock domain
+// needs MCLK present during bring-up, otherwise SDOUT stays flat 0 forever.
+static bool es7210_config() {
   es_w(0x00, 0xFF); es_w(0x00, 0x41);   // reset, release
   es_w(0x01, 0x1F);                      // clock manager (fixed up to 0x14 below)
   es_w(0x09, 0x30); es_w(0x0A, 0x30);    // time control 0/1
@@ -102,6 +102,7 @@ static bool es7210_init() {
   es_w(0x02, 0xC1);                      // main clock: adc_div=1, doubler, dll (16k, 256fs)
   es_w(0x04, 0x01); es_w(0x05, 0x00);    // LRCK divider (16 kHz)
   es_w(0x11, 0x60); es_w(0x12, 0x00);    // SDP out: I2S, 16-bit
+  es_w(0x14, 0x00); es_w(0x15, 0x00);    // ADC12/ADC34 UN-MUTE (take SDOUT out of mute)
   // ---- mic_select(MIC1|MIC2): the analog power-up ----
   es_w(0x43, 0x00); es_w(0x44, 0x00); es_w(0x45, 0x00); es_w(0x46, 0x00);
   es_w(0x4B, 0xFF); es_w(0x4C, 0xFF);    // transient power-down
@@ -117,7 +118,7 @@ static bool es7210_init() {
   es_w(0x4B, 0x00); es_w(0x4C, 0xFF);    // re-assert MIC1/2 on, 3/4 off
 
   uint8_t r0 = es_r(0x00), r4b = es_r(0x4B), r06 = es_r(0x06);
-  Serial.printf("[voice] ES7210 inited @ 0x%02X, reg00=0x%02X reg4B=0x%02X(pwr) reg06=0x%02X\n",
+  Serial.printf("[voice] ES7210 configured @ 0x%02X, reg00=0x%02X reg4B=0x%02X(pwr) reg06=0x%02X\n",
                 g_es_addr, r0, r4b, r06);
   return true;
 }
@@ -177,7 +178,7 @@ void VoiceScreen::enter() {
     _buf = (int16_t*)heap_caps_malloc(VOICE_CAP * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     _cap = _buf ? VOICE_CAP : 0;
   }
-  _hwok = es7210_init();
+  _hwok = es7210_probe();
   strcpy(_status, _hwok ? "mic ready - ENTER to record" : "mic not on I2C - see scan log");
 #else
   strcpy(_status, "beta build only");
@@ -189,7 +190,17 @@ void VoiceScreen::record() {
   if (!_buf) { strcpy(_status, "no audio buffer"); return; }
   strcpy(_status, "recording 2s...");
   ui.requestDraw();
+  // Start the I2S master FIRST so MCLK is live, THEN configure the ES7210 while
+  // it is clocked. Discard the first ~100 ms (clock/PLL settle, DC transient).
   mic_i2s_start();
+  delay(30);
+  es7210_config();
+  delay(30);
+  size_t junk = 0;
+  for (int i = 0; i < 8; i++) {           // flush settle samples
+    int16_t tmp[128];
+    i2s_read(I2S_NUM_1, (char*)tmp, sizeof(tmp), &junk, pdMS_TO_TICKS(50));
+  }
   _len = 0;
   size_t got = 0;
   uint32_t t0 = millis();
