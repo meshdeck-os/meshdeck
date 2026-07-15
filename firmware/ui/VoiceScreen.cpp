@@ -93,33 +93,52 @@ static bool es7210_probe() {
 // MUST be called AFTER the I2S master (MCLK) is running - the ADC clock domain
 // needs MCLK present during bring-up, otherwise SDOUT stays flat 0 forever.
 static bool es7210_config() {
-  es_w(0x00, 0xFF); es_w(0x00, 0x41);   // reset, release
-  es_w(0x01, 0x1F);                      // clock manager (fixed up to 0x14 below)
-  es_w(0x09, 0x30); es_w(0x0A, 0x30);    // time control 0/1
-  es_w(0x40, 0xC3);                      // analog: VMID / vdda
-  es_w(0x41, 0x70); es_w(0x42, 0x70);    // mic bias 1/2, 3/4
-  es_w(0x07, 0x20);                      // OSR
-  es_w(0x02, 0xC1);                      // main clock: adc_div=1, doubler, dll (16k, 256fs)
-  es_w(0x04, 0x01); es_w(0x05, 0x00);    // LRCK divider (16 kHz)
-  es_w(0x11, 0x60); es_w(0x12, 0x00);    // SDP out: I2S, 16-bit
-  es_w(0x14, 0x00); es_w(0x15, 0x00);    // ADC12/ADC34 UN-MUTE (take SDOUT out of mute)
-  // ---- mic_select(MIC1|MIC2): the analog power-up ----
+  // EXACT ESP-ADF es7210 driver sequence: adc_init -> config_sample(16k) ->
+  // mic_select(1|2) -> config_i2s(16bit/I2S) -> ctrl_state(START).
+  // The two fixes that matter: reg01 must end at 0x34 (my old 0x14 left the
+  // ADC12 clock gated -> flat zeros) and reg47/48 must be 0x08 (per-channel
+  // ADC+PGA power), not 0x00.
+  // ---- adc_init ----
+  es_w(0x00, 0xFF); es_w(0x00, 0x41);          // reset, release
+  es_w(0x01, 0x3F);                             // CLOCK_OFF: all ADC clocks off (base for RMW)
+  es_w(0x09, 0x30); es_w(0x0A, 0x30);           // state/power cycles
+  es_w(0x23, 0x2A); es_w(0x22, 0x0A);           // ADC12 HPF
+  es_w(0x20, 0x0A); es_w(0x21, 0x2A);           // ADC34 HPF
+  es_w(0x08, 0x14);                             // MODE_CONFIG: slave
+  es_w(0x40, 0x43);                             // analog power, VDDA 3.3V, VMID
+  es_w(0x41, 0x70); es_w(0x42, 0x70);           // mic bias 1/2, 3/4
+  es_w(0x07, 0x20);                             // OSR
+  es_w(0x02, 0xC1);                             // main clock preset
+  // ---- config_sample(16k): MCLK=256fs ----
+  es_w(0x02, 0xC1); es_w(0x07, 0x20); es_w(0x04, 0x01); es_w(0x05, 0x00);
+  // ---- mic_select(MIC1|MIC2) ----
   es_w(0x43, 0x00); es_w(0x44, 0x00); es_w(0x45, 0x00); es_w(0x46, 0x00);
-  es_w(0x4B, 0xFF); es_w(0x4C, 0xFF);    // transient power-down
-  es_w(0x01, 0x14);                      // enable ADC1/2 clocks (clear 0x0B mask)
-  es_w(0x4B, 0x00);                      // *** MIC1/2 bias + ADC + PGA POWER ON ***
-  es_w(0x43, 0x10); es_w(0x44, 0x10);    // MIC1/MIC2 enable bit4
-  // ---- gain: ~30 dB for a clear first test (low nibble; 0x0A=30dB) ----
-  es_w(0x43, 0x1A); es_w(0x44, 0x1A);
-  // ---- start(): final power-up needed for capture ----
-  es_w(0x06, 0x00);                      // power-down register: fully up
-  es_w(0x47, 0x00); es_w(0x48, 0x00);    // MIC1/MIC2 individual power on
-  es_w(0x49, 0x00); es_w(0x4A, 0x00);
-  es_w(0x4B, 0x00); es_w(0x4C, 0xFF);    // re-assert MIC1/2 on, 3/4 off
+  es_w(0x4B, 0xFF); es_w(0x4C, 0xFF);           // transient power-down
+  es_w(0x01, 0x34);                             // *** ENABLE ADC12 clock (0x3F&~0x0B) ***
+  es_w(0x4B, 0x00);                             // *** MIC12 bias+ADC+PGA POWER UP ***
+  es_w(0x43, 0x10);                             // MIC1 channel enable
+  es_w(0x01, 0x34); es_w(0x4B, 0x00);           // MIC2 path (same regs)
+  es_w(0x44, 0x10);                             // MIC2 channel enable
+  es_w(0x12, 0x00);                             // SDP2: SDOUT active, non-TDM
+  // ---- gain 24 dB (low nibble 0x08; bit4 = channel enable) ----
+  es_w(0x43, 0x18); es_w(0x44, 0x18);
+  // ---- config_i2s: 16-bit / I2S standard ----
+  es_w(0x11, 0x60);
+  es_w(0x02, 0xC1); es_w(0x07, 0x20); es_w(0x04, 0x01); es_w(0x05, 0x00);
+  // ---- un-mute (low 2 bits of 0x14/0x15 = 0) ----
+  es_w(0x14, 0x00); es_w(0x15, 0x00);
+  // ---- ctrl_state(START) / es7210_start ----
+  es_w(0x01, 0x34);                             // clocks running
+  es_w(0x06, 0x00);                             // POWER_DOWN off
+  es_w(0x40, 0x43);                             // analog power
+  es_w(0x47, 0x08); es_w(0x48, 0x08);           // *** MIC1/MIC2 ADC+PGA POWER UP ***
+  es_w(0x49, 0x08); es_w(0x4A, 0x08);
+  es_w(0x43, 0x18); es_w(0x44, 0x18);           // re-assert enable+gain
+  es_w(0x4B, 0x00); es_w(0x01, 0x34); es_w(0x12, 0x00);
 
-  uint8_t r0 = es_r(0x00), r4b = es_r(0x4B), r06 = es_r(0x06);
-  Serial.printf("[voice] ES7210 configured @ 0x%02X, reg00=0x%02X reg4B=0x%02X(pwr) reg06=0x%02X\n",
-                g_es_addr, r0, r4b, r06);
+  uint8_t r01 = es_r(0x01), r4b = es_r(0x4B), r47 = es_r(0x47);
+  Serial.printf("[voice] ES7210 cfg @0x%02X reg01=0x%02X(clk) reg4B=0x%02X reg47=0x%02X\n",
+                g_es_addr, r01, r4b, r47);
   return true;
 }
 
