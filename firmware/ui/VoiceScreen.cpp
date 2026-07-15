@@ -127,13 +127,15 @@ static void mic_i2s_start() {
   cfg.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
   cfg.sample_rate = VOICE_HZ;
   cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
-  cfg.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
+  cfg.channel_format = I2S_CHANNEL_FMT_ALL_LEFT;   // LilyGo: ES7210 mic sits in the LEFT slot
   cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
   cfg.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
   cfg.dma_buf_count = 8;
-  cfg.dma_buf_len = 256;
+  cfg.dma_buf_len = 64;                             // match LilyGo
   cfg.use_apll = false;
+  cfg.tx_desc_auto_clear = true;
   cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+  cfg.bits_per_chan = I2S_BITS_PER_CHAN_16BIT;
   i2s_driver_install(I2S_NUM_1, &cfg, 0, NULL);
   i2s_pin_config_t pins = {};
   pins.mck_io_num = ES_MCLK;
