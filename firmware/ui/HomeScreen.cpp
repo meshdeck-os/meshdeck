@@ -3,8 +3,7 @@
 #include <RTClib.h>
 
 struct AppDef { const char* label; ScreenId scr; uint16_t color; char glyph; bool disc; };
-#define N_APPS 14
-static const AppDef APPS[N_APPS] = {
+static const AppDef APPS[] = {
   { "Chat",      SCR_CHAT,      C_ACCENT, 'C', false },
   { "Contacts",  SCR_CONTACTS,  C_GREEN,  '@', false },
   { "Discover",  SCR_LASTHEARD, C_CYAN,   '*', true  },   // advert + jump to Heard
@@ -19,7 +18,11 @@ static const AppDef APPS[N_APPS] = {
   { "Settings",  SCR_SETTINGS,  C_FG_DIM, 'S', false },
   { "WiFi",      SCR_WIFI,      C_ACCENT, 'W', false },
   { "Channels",  SCR_CHANNELS,  C_ORANGE, '#', false },
+#ifdef MESHDECK_BETA
+  { "Voice",     SCR_VOICE,     C_PINK,   'V', false },   // beta: audio PoC
+#endif
 };
+#define N_APPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
 
 // grid layout: 5 rows x 3 cols
 #define GRID_X0   14

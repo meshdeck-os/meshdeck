@@ -305,3 +305,24 @@ private:
   char _edit[68];
   int  _elen = 0;
 };
+
+// ---------------------------------------------------------------- Voice test (beta)
+
+class VoiceScreen : public Screen {
+public:
+  VoiceScreen(UITask& u) : Screen(u) {}
+  void enter() override;
+  void draw() override;
+  bool key(uint8_t c) override;
+  bool nav(NavEvent e) override;
+private:
+  void record();
+  void playback();
+  int16_t* _buf = nullptr;     // PSRAM capture buffer (16 kHz mono, 16-bit)
+  int      _cap = 0;           // capacity in samples
+  int      _len = 0;           // samples captured
+  int      _peak = 0;          // last-capture peak amplitude
+  int      _rms = 0;           // last-capture RMS
+  bool     _hwok = false;      // ES7210 chip-id read back OK
+  char     _status[40] = "hold ENTER to record 2s";
+};

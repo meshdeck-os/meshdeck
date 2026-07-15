@@ -253,6 +253,7 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
   _screens[SCR_MAPDL]     = new MapDownloadScreen(*this);
   _screens[SCR_WIFI]      = new WifiScreen(*this);
   _screens[SCR_CHANNELS]  = new ChannelsScreen(*this);
+  _screens[SCR_VOICE]     = new VoiceScreen(*this);
 
   termLog(C_TERM_SYS, "MeshDeck v%s on MeshCore %s", MESHDECK_VERSION, FIRMWARE_VERSION);
   // NOTE: format the floats separately - StrHelper::ftoa returns a shared static
