@@ -1,6 +1,10 @@
 #include "AllScreens.h"
 #include "../MyMesh.h"
 #include <RTClib.h>
+#include <SPIFFS.h>
+
+#define MENU_FILE  "/meshdeck_menu.bin"
+#define MENU_MAGIC 0x314D444DUL   // "MDM1" - customizable home menu (#10)
 
 struct AppDef { const char* label; ScreenId scr; uint16_t color; char glyph; bool disc; };
 static const AppDef APPS[] = {
@@ -44,6 +48,7 @@ static void openApp(UITask& ui, int i) {
 void HomeScreen::draw() {
   GFXcanvas16& c = ui.cv();
   c.fillScreen(C_BG);
+  if (!_menuLoaded) loadMenu();
 
   // big clock
   char clk[8];
@@ -122,25 +127,32 @@ void HomeScreen::draw() {
     c.setTextColor(wcol);   c.print(w);
   }
 
-  // app grid 5x3
-  for (int i = 0; i < N_APPS; i++) {
-    int gx = GRID_X0 + (i % 3) * CELL_W;
-    int gy = GRID_Y0 + (i / 3) * CELL_H;
-    bool sel = i == _sel;
+  // app grid, built from the customizable order (#10). In edit mode every app
+  // is shown (hidden ones dimmed); normally only visible apps, packed together.
+  uint8_t slots[24];
+  int nslots;
+  if (_edit) { nslots = N_APPS; for (int s2 = 0; s2 < N_APPS; s2++) slots[s2] = _order[s2]; }
+  else       { nslots = visible(slots); }
+
+  for (int slot = 0; slot < nslots; slot++) {
+    int a = slots[slot];
+    int gx = GRID_X0 + (slot % 3) * CELL_W;
+    int gy = GRID_Y0 + (slot / 3) * CELL_H;
+    bool sel = slot == _sel;
+    bool hid = _edit && _hidden[a];
+    bool grabbed = _edit && _grab == slot;
     c.fillRoundRect(gx, gy, CELL_W - 8, CELL_H - 5, 6, sel ? C_BG_RAISED : C_BG_ALT);
-    if (sel) c.drawRoundRect(gx, gy, CELL_W - 8, CELL_H - 5, 6, APPS[i].color);
-    // glyph badge
-    c.fillRoundRect(gx + 5, gy + 5, 20, 20, 5, APPS[i].color);
+    if (sel) c.drawRoundRect(gx, gy, CELL_W - 8, CELL_H - 5, 6, grabbed ? C_YELLOW : APPS[a].color);
+    c.fillRoundRect(gx + 5, gy + 5, 20, 20, 5, hid ? C_FG_FAINT : APPS[a].color);
     c.setTextSize(2);
     c.setTextColor(C_BG);
     c.setCursor(gx + 9, gy + 8);
-    c.write(APPS[i].glyph);
+    c.write(APPS[a].glyph);
     c.setTextSize(1);
-    c.setTextColor(sel ? C_FG : C_FG_DIM);
+    c.setTextColor(hid ? C_FG_FAINT : (sel ? C_FG : C_FG_DIM));
     c.setCursor(gx + 30, gy + 11);
-    c.print(APPS[i].label);
-    // unread badge on chat
-    if (APPS[i].scr == SCR_CHAT) {
+    c.print(APPS[a].label);
+    if (!_edit && APPS[a].scr == SCR_CHAT) {
       int u = ui.store.totalUnread();
       if (u > 0) {
         c.fillCircle(gx + CELL_W - 16, gy + 8, 6, C_RED);
@@ -150,27 +162,58 @@ void HomeScreen::draw() {
       }
     }
   }
+
+  if (_edit) {
+    c.setTextColor(C_YELLOW);
+    c.setCursor(6, SCREEN_H - 10);
+    c.print(_grab >= 0 ? "move it, then click to drop" : "click=grab  H=hide/show  E=done");
+  }
 }
 
 bool HomeScreen::key(uint8_t k) {
-  if (k >= '1' && k <= '9') {
-    openApp(ui, k - '1');
-    return true;
+  if (_edit) {
+    if (k == 'h' || k == 'H') { _hidden[_order[_sel]] = !_hidden[_order[_sel]]; return true; }
+    if (k == 'e' || k == 'E' || k == 0x0D) {
+      _edit = false; _grab = -1; saveMenu();
+      uint8_t v[24]; int nv = visible(v); if (_sel >= nv) _sel = nv ? nv - 1 : 0;
+      return true;
+    }
+    return true;   // swallow other keys while editing
   }
-  if (k == 0x0D) { openApp(ui, _sel); return true; }
+  if (k == 'e' || k == 'E') { _edit = true; _grab = -1; _sel = 0; return true; }
+  uint8_t vis[24]; int nv = visible(vis);
+  if (k >= '1' && k <= '9') { int idx = k - '1'; if (idx < nv) openApp(ui, vis[idx]); return true; }
+  if (k == 0x0D) { if (_sel < nv) openApp(ui, vis[_sel]); return true; }
   return false;
 }
 
 bool HomeScreen::nav(NavEvent e) {
+  if (_edit) {
+    if (e == NAV_BACK)   { _edit = false; _grab = -1; saveMenu();
+                           uint8_t v[24]; int nv = visible(v); if (_sel >= nv) _sel = nv ? nv - 1 : 0; return true; }
+    if (e == NAV_SELECT) { _grab = (_grab == _sel) ? -1 : _sel; return true; }
+    int cur = _sel, dst = cur, n = N_APPS;
+    switch (e) {
+      case NAV_UP:    if (cur >= 3) dst = cur - 3; break;
+      case NAV_DOWN:  if (cur + 3 < n) dst = cur + 3; break;
+      case NAV_LEFT:  if (cur % 3) dst = cur - 1; break;
+      case NAV_RIGHT: if (cur % 3 < 2 && cur + 1 < n) dst = cur + 1; break;
+      default: return true;
+    }
+    if (dst != cur) {
+      if (_grab == cur) { uint8_t t = _order[cur]; _order[cur] = _order[dst]; _order[dst] = t; _grab = dst; }
+      _sel = dst;
+    }
+    return true;
+  }
+  uint8_t vis[24]; int nv = visible(vis);
   switch (e) {
     case NAV_UP:    if (_sel >= 3) _sel -= 3; return true;
-    case NAV_DOWN:  if (_sel < N_APPS - 3) _sel += 3; return true;
+    case NAV_DOWN:  if (_sel + 3 < nv) _sel += 3; return true;
     case NAV_LEFT:  if (_sel % 3) _sel--; return true;
-    case NAV_RIGHT: if (_sel % 3 < 2 && _sel + 1 < N_APPS) _sel++; return true;
-    case NAV_SELECT: openApp(ui, _sel); return true;
-    case NAV_BACK:
-      // already at home - do nothing (never blank the screen here)
-      return true;
+    case NAV_RIGHT: if (_sel % 3 < 2 && _sel + 1 < nv) _sel++; return true;
+    case NAV_SELECT: if (_sel < nv) openApp(ui, vis[_sel]); return true;
+    case NAV_BACK:  return true;   // already home
     default: return false;
   }
 }
@@ -180,10 +223,51 @@ bool HomeScreen::touch(const TouchEvent& e) {
   if (e.y < GRID_Y0) return true;
   int col = (e.x - GRID_X0) / CELL_W;
   int row = (e.y - GRID_Y0) / CELL_H;
-  int idx = row * 3 + col;
-  if (col >= 0 && col < 3 && row >= 0 && row < GRID_ROWS && idx < N_APPS) {
-    _sel = idx;
-    openApp(ui, _sel);
-  }
+  int slot = row * 3 + col;
+  if (col < 0 || col >= 3 || row < 0 || row >= GRID_ROWS) return true;
+  if (_edit) { if (slot < N_APPS) _sel = slot; return true; }
+  uint8_t vis[24]; int nv = visible(vis);
+  if (slot >= 0 && slot < nv) { _sel = slot; openApp(ui, vis[slot]); }
   return true;
+}
+
+void HomeScreen::enter() {
+  if (!_menuLoaded) loadMenu();
+  _edit = false; _grab = -1;
+  uint8_t v[24]; int nv = visible(v); if (_sel >= nv) _sel = nv ? nv - 1 : 0;
+}
+
+int HomeScreen::visible(uint8_t* out) {
+  int n = 0;
+  for (int s = 0; s < N_APPS; s++) { int a = _order[s]; if (!_hidden[a]) out[n++] = a; }
+  return n;
+}
+
+void HomeScreen::loadMenu() {
+  _menuLoaded = true;
+  for (int i = 0; i < N_APPS; i++) { _order[i] = (uint8_t)i; _hidden[i] = false; }
+  File f = SPIFFS.open(MENU_FILE, "r");
+  if (f) {
+    uint32_t magic = 0; uint8_t cnt = 0;
+    if (f.read((uint8_t*)&magic, 4) == 4 && magic == MENU_MAGIC &&
+        f.read(&cnt, 1) == 1 && cnt == N_APPS) {
+      uint8_t ord[24], hid[24];
+      if (f.read(ord, cnt) == cnt && f.read(hid, cnt) == cnt) {
+        bool seen[24] = { false }; bool ok = true;
+        for (int i = 0; i < cnt; i++) { if (ord[i] >= N_APPS || seen[ord[i]]) { ok = false; break; } seen[ord[i]] = true; }
+        if (ok) for (int i = 0; i < cnt; i++) { _order[i] = ord[i]; _hidden[i] = hid[i] ? true : false; }
+      }
+    }
+    f.close();
+  }
+}
+
+void HomeScreen::saveMenu() {
+  File f = SPIFFS.open(MENU_FILE, "w");
+  if (!f) return;
+  uint32_t magic = MENU_MAGIC; uint8_t cnt = N_APPS, hid[24];
+  for (int i = 0; i < N_APPS; i++) hid[i] = _hidden[i] ? 1 : 0;
+  f.write((uint8_t*)&magic, 4); f.write(&cnt, 1);
+  f.write(_order, N_APPS); f.write(hid, N_APPS);
+  f.close();
 }

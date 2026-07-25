@@ -4,7 +4,7 @@
 
 enum SetItem : int {
   SI_NAME = 0, SI_FREQ, SI_SF, SI_BW, SI_CR, SI_PATHMODE, SI_POWER, SI_PRESET,
-  SI_BRIGHT, SI_TIMEOUT, SI_TZ, SI_ALWAYS, SI_SOUND, SI_VOL, SI_FLIP, SI_TOUCHMAP, SI_TBSPEED, SI_ADVINT, SI_SOSEN,
+  SI_BRIGHT, SI_TIMEOUT, SI_TZ, SI_ALWAYS, SI_SOUND, SI_VOL, SI_FLIP, SI_TOUCHMAP, SI_TBSPEED, SI_ADVINT, SI_ADVMOVE, SI_SOSEN,
   SI_GPS, SI_WIFISSID, SI_WIFIPASS, SI_WIFI, SI_LOCPOL, SI_MANLAT, SI_MANLON, SI_AUTOADD,
   SI_ADVERT, SI_ADVERTF, SI_CLEARMSG, SI_DLMAP, SI_SDPREP, SI_SDMAPS, SI_SDUPDATE, SI_ABOUT,
   SI_COUNT
@@ -12,7 +12,7 @@ enum SetItem : int {
 
 static const char* LABELS[SI_COUNT] = {
   "Node name", "Frequency (MHz)", "Spreading factor", "Bandwidth (kHz)", "Coding rate", "Path mode (bytes/hop)", "TX power (dBm)", "Radio preset setup",
-  "Brightness", "Screen timeout (s)", "Time zone (UTC+)", "Always-on clock", "Sounds", "Volume", "Flip display", "Touch mapping", "Trackball speed", "Auto-advert (min)", "SOS beacon",
+  "Brightness", "Screen timeout (s)", "Time zone (UTC+)", "Always-on clock", "Sounds", "Volume", "Flip display", "Touch mapping", "Trackball speed", "Auto-advert (min)", "Advert on move (m)", "SOS beacon",
   "GPS module", "WiFi network (SSID)", "WiFi password", "WiFi connect", "Share location in advert", "Manual latitude", "Manual longitude", "Auto-add contacts",
   "Send advert (0-hop)", "Send advert (flood)", "Clear message history", "Download maps (WiFi)", "Prepare SD (maps folder)", "Reload SD map packs", "Update firmware from SD", "About"
 };
@@ -69,6 +69,7 @@ void SettingsScreen::draw() {
       case SI_TOUCHMAP: snprintf(v, sizeof(v), "%c", 'A' + ui.set.touch_map); break;
       case SI_TBSPEED:  snprintf(v, sizeof(v), "%d/5", ui.set.tb_speed); break;
       case SI_ADVINT:   if (ui.set.adv_interval_min) snprintf(v, sizeof(v), "%d", ui.set.adv_interval_min); else strcpy(v, "off"); break;
+      case SI_ADVMOVE:  if (ui.set.reserved[0]) snprintf(v, sizeof(v), "%dm", ui.set.reserved[0] * 10); else strcpy(v, "off"); break;
       case SI_PRESET:   strcpy(v, ">"); break;
       case SI_GPS:     strcpy(v, p->gps_enabled ? "on" : "off"); break;
       case SI_WIFISSID: ellipsize(v, 18, ui.wifiSsid()[0] ? ui.wifiSsid() : "(not set)"); break;
@@ -187,6 +188,14 @@ void SettingsScreen::adjust(int dir) {
       for (int i = 0; i < 5; i++) if (ui.set.adv_interval_min == IVS[i]) ii = i;
       ii = constrain(ii + dir, 0, 4);
       ui.set.adv_interval_min = IVS[ii];
+      break;
+    }
+    case SI_ADVMOVE: {
+      static const uint8_t MVS[] = { 0, 3, 5, 10, 15, 25 };   // units of 10 m
+      int ii = 0;
+      for (int i = 0; i < 6; i++) if (ui.set.reserved[0] == MVS[i]) ii = i;
+      ii = constrain(ii + dir, 0, 5);
+      ui.set.reserved[0] = MVS[ii];
       break;
     }
     case SI_GPS:

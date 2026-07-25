@@ -836,6 +836,24 @@ void UITask::loop() {
       if (mesh) { mesh->advertFlood(); termLog(C_TERM_TX, "auto-advert (flood)"); }
     }
   }
+  // auto-advert on movement: flood an advert once we've moved past the set
+  // distance (>=30 s apart), so trackers update without spamming while still. (#10)
+  {
+    uint8_t mv = set.reserved[0];                  // threshold in units of 10 m; 0 = off
+    if (mv > 0 && gpsFix() && sensors) {
+      double lat = sensors->node_lat, lon = sensors->node_lon;
+      if (_adv_last_lat == 0 && _adv_last_lon == 0) { _adv_last_lat = lat; _adv_last_lon = lon; }
+      else {
+        double dlat = (lat - _adv_last_lat) * 111320.0;
+        double dlon = (lon - _adv_last_lon) * 111320.0 * cos(lat * 3.14159265 / 180.0);
+        double dist = sqrt(dlat * dlat + dlon * dlon);
+        if (dist >= mv * 10.0 && millis() - _adv_move_ms > 30000UL) {
+          _adv_move_ms = millis(); _adv_last_lat = lat; _adv_last_lon = lon;
+          if (mesh) { mesh->advertFlood(); termLog(C_TERM_TX, "auto-advert (moved %dm)", (int)dist); }
+        }
+      }
+    }
+  }
 
   // SOS beacon: repeat an SOS + latest position until cancelled
   if (_sos_active && millis() - _sos_last > 120000UL) {
