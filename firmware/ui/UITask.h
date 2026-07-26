@@ -269,6 +269,7 @@ private:
 
   // auto-advert + SOS beacon
   uint32_t _last_auto_adv = 0;
+  uint8_t  _cpu_mhz = 240;          // current CPU clock, for the power saver (#14)
   bool _sos_active = false;
   uint32_t _sos_last = 0;
 

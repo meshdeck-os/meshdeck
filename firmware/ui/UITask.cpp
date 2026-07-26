@@ -828,6 +828,14 @@ void UITask::loop() {
 
   dispatchInput();
 
+  // Power saver (#14): when enabled, drop the CPU to 80 MHz while the screen is
+  // off (idle) and restore 240 MHz when it's on. 80 MHz still supports WiFi/BLE
+  // and comfortably services the LoRa SPI, so reachability is unaffected.
+  {
+    uint8_t want = set.reserved[1] ? (hw.isDisplayOn() ? 240 : 80) : 240;
+    if (want != _cpu_mhz) { setCpuFrequencyMhz(want); _cpu_mhz = want; }
+  }
+
   // auto-advert: periodic flood advert so nearby nodes keep discovering us
   if (set.adv_interval_min > 0) {
     uint32_t period = (uint32_t)set.adv_interval_min * 60000UL;

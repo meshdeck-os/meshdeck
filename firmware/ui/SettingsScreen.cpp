@@ -4,7 +4,7 @@
 
 enum SetItem : int {
   SI_NAME = 0, SI_FREQ, SI_SF, SI_BW, SI_CR, SI_PATHMODE, SI_POWER, SI_PRESET,
-  SI_BRIGHT, SI_TIMEOUT, SI_TZ, SI_ALWAYS, SI_SOUND, SI_VOL, SI_FLIP, SI_TOUCHMAP, SI_TBSPEED, SI_ADVINT, SI_SOSEN,
+  SI_BRIGHT, SI_TIMEOUT, SI_TZ, SI_ALWAYS, SI_SOUND, SI_VOL, SI_FLIP, SI_TOUCHMAP, SI_TBSPEED, SI_ADVINT, SI_SOSEN, SI_PWRSAVE,
   SI_GPS, SI_WIFISSID, SI_WIFIPASS, SI_WIFI, SI_LOCPOL, SI_MANLAT, SI_MANLON, SI_AUTOADD,
   SI_ADVERT, SI_ADVERTF, SI_CLEARMSG, SI_DLMAP, SI_SDPREP, SI_SDMAPS, SI_SDUPDATE, SI_ABOUT,
   SI_COUNT
@@ -12,7 +12,7 @@ enum SetItem : int {
 
 static const char* LABELS[SI_COUNT] = {
   "Node name", "Frequency (MHz)", "Spreading factor", "Bandwidth (kHz)", "Coding rate", "Path mode (bytes/hop)", "TX power (dBm)", "Radio preset setup",
-  "Brightness", "Screen timeout (s)", "Time zone (UTC+)", "Always-on clock", "Sounds", "Volume", "Flip display", "Touch mapping", "Trackball speed", "Auto-advert (min)", "SOS beacon",
+  "Brightness", "Screen timeout (s)", "Time zone (UTC+)", "Always-on clock", "Sounds", "Volume", "Flip display", "Touch mapping", "Trackball speed", "Auto-advert (min)", "SOS beacon", "Power saver",
   "GPS module", "WiFi network (SSID)", "WiFi password", "WiFi connect", "Share location in advert", "Manual latitude", "Manual longitude", "Auto-add contacts",
   "Send advert (0-hop)", "Send advert (flood)", "Clear message history", "Download maps (WiFi)", "Prepare SD (maps folder)", "Reload SD map packs", "Update firmware from SD", "About"
 };
@@ -61,6 +61,7 @@ void SettingsScreen::draw() {
       case SI_TIMEOUT: if (ui.set.timeout_s) snprintf(v, sizeof(v), "%d", ui.set.timeout_s); else strcpy(v, "never"); break;
       case SI_TZ:      snprintf(v, sizeof(v), "%+d", ui.set.tz_offset); break;
       case SI_SOSEN:   strcpy(v, ui.set.sos_disabled ? "off" : "on"); break;
+      case SI_PWRSAVE: strcpy(v, ui.set.reserved[1] ? "on" : "off"); break;
       case SI_CLEARMSG: strcpy(v, ">"); break;
       case SI_ALWAYS:  strcpy(v, ui.set.always_on ? "on" : "off"); break;
       case SI_SOUND:   strcpy(v, ui.set.sounds ? "on" : "off"); break;
@@ -161,6 +162,7 @@ void SettingsScreen::adjust(int dir) {
     }
     case SI_TZ:     ui.set.tz_offset = constrain(ui.set.tz_offset + dir, -12, 14); break;
     case SI_SOSEN:  ui.set.sos_disabled = !ui.set.sos_disabled; break;
+    case SI_PWRSAVE: ui.set.reserved[1] = ui.set.reserved[1] ? 0 : 1; break;
     case SI_ALWAYS: ui.set.always_on = !ui.set.always_on; break;
     case SI_SOUND:  ui.set.sounds = !ui.set.sounds; ui.hw.setSound(ui.set.sounds, ui.set.volume); break;
     case SI_VOL:
