@@ -106,7 +106,8 @@ void ChatScreen::draw() {
       bool out = m->flags & MF_OUT;
       bool show_name = t->kind == TK_CHANNEL && !out;
 
-      int text_h = measureRichTextHeight(c, BUB_MAX_W - 14, m->text, 1);
+      int cs = (ui.set.reserved[1] & 2) ? 2 : 1;   // Large chat text (#15)
+      int text_h = measureRichTextHeight(c, BUB_MAX_W - 14, m->text, cs);
       int bub_h = text_h + 8 + (show_name ? 10 : 0);
       int bub_w = BUB_MAX_W;
       // shrink narrow messages
@@ -115,7 +116,7 @@ void ChatScreen::draw() {
         if (*p == '\n' || *p == 0) { if (cur_len > longest) longest = cur_len; cur_len = 0; if (!*p) break; }
         else cur_len++;
       }
-      int want_w = longest * 6 + 18;
+      int want_w = longest * 6 * cs + 18;
       int name_w = show_name ? (int)strlen(m->sender) * 6 + 50 : 0;
       if (want_w < name_w) want_w = name_w;
       if (want_w < bub_w) bub_w = want_w;
@@ -146,7 +147,7 @@ void ChatScreen::draw() {
         c.print(sig);
         ty2 += 10;
       }
-      drawRichText(c, bx + 7, ty2, bub_w - 14, m->text, out ? C_BUB_OUT_TXT : C_FG, 1);
+      drawRichText(c, bx + 7, ty2, bub_w - 14, m->text, out ? C_BUB_OUT_TXT : C_FG, cs);
 
       // time + delivery ticks under bubble
       char meta[24];

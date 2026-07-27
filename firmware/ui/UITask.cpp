@@ -855,6 +855,14 @@ void UITask::loop() {
     }
   }
 
+  // Power saver (#14): when enabled (reserved[1] bit0), drop the CPU to 80 MHz
+  // while the screen is off and restore 240 MHz when it's on. 80 MHz still runs
+  // WiFi/BLE and the LoRa SPI, so reachability is unaffected.
+  {
+    uint8_t want = (set.reserved[1] & 1) ? (hw.isDisplayOn() ? 240 : 80) : 240;
+    if (want != _cpu_mhz) { setCpuFrequencyMhz(want); _cpu_mhz = want; }
+  }
+
   // SOS beacon: repeat an SOS + latest position until cancelled
   if (_sos_active && millis() - _sos_last > 120000UL) {
     sendSOSNow();
