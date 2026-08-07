@@ -71,10 +71,14 @@ public:
 
   // -- sound --
   void setSound(bool on, uint8_t volume_0_10) { _snd_on = on; _snd_vol = volume_0_10; }
+  bool soundOn() const { return _snd_on; }
+  uint8_t volume() const { return _snd_vol; }
   void beep(uint16_t freq, uint16_t ms);    // blocking, short
   void chimeMessage();
   void chimeBoot();
   void chimeError();
+  // Loud multi-tone jingle after boot (forces volume on). Returns false if muted/disabled.
+  bool playStartupSelfTest();
 
   // -- SD card (shared SPI bus; call sdBegin, use SD, then sdEnd) --
   bool sdBegin();

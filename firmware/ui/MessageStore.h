@@ -15,6 +15,9 @@
 #define MF_OUT        0x01
 #define MF_DELIVERED  0x02
 #define MF_FAILED     0x04
+#define MF_VOICE  0x10
+
+
 
 struct DeckMsg {
   uint32_t ts;                    // epoch seconds
@@ -24,6 +27,9 @@ struct DeckMsg {
   uint8_t  flags;
   char sender[MD_SENDER_LEN];     // display name (channel messages)
   char text[MD_TEXT_LEN];
+  // Voice payload (only valid when MF_VOICE is set)
+  uint16_t voice_len = 0;
+  uint8_t* voice_data = nullptr;   // PSRAM, owned by the msg
 };
 
 // DeckThread.kind
@@ -53,7 +59,9 @@ public:
   int indexOf(DeckThread* t) const { return t ? (int)(t - _threads) : -1; }
 
   DeckMsg* addMsg(DeckThread* t, const char* sender, const char* text,
-                  uint32_t ts, uint8_t flags, int8_t snr4, uint8_t hops, uint32_t ack);
+                uint32_t ts, uint8_t flags, int8_t snr4, uint8_t hops, uint32_t ack,
+                const uint8_t* voice = nullptr, uint16_t voice_len = 0);
+
   DeckMsg* msgAt(DeckThread* t, int i);             // i: 0 = oldest .. count-1 = newest
   bool markDelivered(uint32_t ack);                 // returns true if an outgoing msg matched
   void markTimedOut();                              // newest un-acked outgoing -> failed

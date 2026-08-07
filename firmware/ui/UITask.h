@@ -25,6 +25,8 @@ class Screen {
 public:
   Screen(UITask& u) : ui(u) {}
   virtual void enter() {}
+  /** Called when navigating away from this screen (before the next enter). */
+  virtual void leave() {}
   virtual void draw() = 0;
   virtual bool key(uint8_t c) { return false; }
   virtual bool nav(NavEvent e) { return false; }
@@ -51,7 +53,8 @@ struct DeckSettings {
   uint8_t adv_interval_min;   // auto-advert period in minutes (0 = off)
   int8_t  tz_offset;          // local time = UTC + tz_offset hours (-12..+14)
   uint8_t sos_disabled;       // 1 = hide/disable the SOS beacon tile
-  uint8_t reserved[2];
+  uint8_t room_login_tries;   // auto-login attempts per room per boot (1..20, default 5)
+  uint8_t reserved[1];
 };
 
 // ---- last heard ----
@@ -74,6 +77,13 @@ struct TermLine { uint16_t color; char text[TERM_COLS]; };
 
 // ---- noise history ----
 #define NOISE_SAMPLES 320
+// ---- ChatScreen layout constants (needed because draw() lives here) ----
+#define TAB_H      16
+#define INPUT_H    22
+#define CHAT_TOP   (STATUS_H + 1 + TAB_H)
+#define CHAT_BOT   (SCREEN_H - INPUT_H)
+#define BUB_MAX_W  230
+
 
 // ---- trace result ----
 struct TraceResult {
@@ -104,8 +114,21 @@ public:
   void loop() override;
 
   // ---- rich hooks from MyMesh ----
+  void reresolveThreadSenders(DeckThread* t);
+  void onVoiceRecv(const mesh::GroupChannel& channel,
+                   const uint8_t* voice_data, size_t len,
+                   bool end_of_stream, float snr) override;
+
+  void onVoiceRecvFromContact(const ContactInfo& from,
+                              const uint8_t* voice_data, size_t len,
+                              bool end_of_stream, float snr) override;
+
+  void onVoicePacketSent(uint32_t tag, uint16_t len, bool eos) override;
+  void onVoicePacketAcked(uint32_t tag, bool eos) override;
+
   void onContactMsg(const ContactInfo& from, const char* text, uint32_t sender_ts,
-                    uint8_t path_len, float snr) override;
+                  uint8_t path_len, float snr,
+                  const uint8_t* sender_prefix = nullptr) override;
   void onCliResponse(const ContactInfo& from, const char* text) override;
   void onChannelMsg(uint8_t channel_idx, const char* channel_name, const char* text,
                     uint32_t ts, uint8_t path_len, float snr) override;
@@ -135,6 +158,42 @@ public:
   void requestDraw() { _dirty = true; }
   void saveSettings();
   void applySettings();
+
+  // Room / repeater login credentials (SPIFFS) + auto-login
+  static constexpr int ROOM_CRED_MAX = 16;
+  static constexpr uint8_t AUTO_LOGIN_TRIES_DEFAULT = 5;
+  static constexpr uint8_t AUTO_LOGIN_TRIES_MAX = 20;
+  uint8_t autoLoginMaxTries() const;  // from DeckSettings, clamped
+  struct RoomCred {
+    uint8_t pub_prefix[6];
+    char    password[16];   // MeshCore max 15 + NUL
+    uint8_t auto_login;     // 1 = re-login after reboot
+    uint8_t type;           // ADV_TYPE_ROOM / REPEATER
+    char    name[24];
+  };
+  void loadRoomCreds();
+  void saveRoomCreds();
+  const RoomCred* findRoomCred(const uint8_t* prefix6) const;
+  RoomCred* findRoomCredMut(const uint8_t* prefix6);
+  void saveRoomCred(const ContactInfo& c, const char* password, bool auto_login);
+  void forgetRoomCred(const uint8_t* prefix6);
+  bool setRoomAutoLogin(const uint8_t* prefix6, bool on);
+  bool beginRoomLogin(const ContactInfo& c, const char* password, bool auto_login_if_ok,
+                      bool force = false);
+  void tryAutoLoginRooms();   // call after boot / when repeaters list opens
+  void onLoginResult(const ContactInfo& from, bool ok) override;
+  bool roomSessionOk(const uint8_t* prefix6) const;  // logged in this boot
+  // After login, room servers push backlog stop-and-wait. Block TX until quiet.
+  bool isRoomSyncing(const uint8_t* prefix6) const;
+  // Remaining ms until send allowed (0 = ready). Also true for non-rooms.
+  uint32_t roomSyncRemainingMs(const uint8_t* prefix6) const;
+  bool allowSendToContact(const ContactInfo& c, bool toast_if_blocked = true);
+  // Re-login and re-request backlog (full_history zeros sync_since)
+  bool resyncRoom(const ContactInfo& c, bool full_history = true);
+  int  roomCredCount() const { return _room_cred_n; }
+  const RoomCred* roomCredAt(int i) const {
+    return (i >= 0 && i < _room_cred_n) ? &_room_creds[i] : nullptr;
+  }
 
   // discovery / diagnostics / SOS
   void discover();                     // send a flood advert + jump to Heard
@@ -190,8 +249,9 @@ public:
   float lastRxSnr() const { return _last_rx_snr; }
   uint32_t lastRxMillis() const { return _last_rx_millis; }
 
-  // trace
+  // trace / voice (contact-oriented actions)
   bool startTrace(const ContactInfo& target);
+  bool startVoiceCall(const ContactInfo& to);   // Contacts → Call... (beta PTT)
   TraceResult trace;
 
   // repeater console (CLI responses from repeaters)
@@ -205,6 +265,8 @@ public:
   uint32_t localEpoch() const;                    // epochNow() + timezone offset
   void fmtClock(char* out, size_t sz) const;      // "14:05" (local)
   void fmtAgo(char* out, size_t sz, uint32_t epoch_then) const;
+  // Contact out_path as "1a > 14 > 2b" (or "flood" / "direct")
+  void fmtContactPath(char* out, size_t sz, const ContactInfo& ct) const;
   void drawStatusBar(const char* title);
 
   // number/symbol entry layer (works regardless of the keyboard chip's alt key)
@@ -223,6 +285,11 @@ public:
   volatile int16_t _inj_x = 0, _inj_y = 0;
 
   ContactInfo* contactByPrefix(const uint8_t* prefix6);
+
+  // used by LastHeardScreen "Save contact"
+  ContactInfo* findRecentContact(const uint8_t* prefix6);
+  void rememberRecentContact(const ContactInfo& c);
+
 
 private:
   void dispatchInput();
@@ -246,6 +313,44 @@ private:
   uint16_t _toast_color = C_ACCENT;
   uint32_t _toast_until = 0;
 
+  // room/repeater saved logins
+  RoomCred _room_creds[ROOM_CRED_MAX];
+  int      _room_cred_n = 0;
+  // Per-cred session flag: already successfully logged in this boot (not persisted)
+  uint8_t  _room_session_ok[ROOM_CRED_MAX] = {0};
+  // Per-cred auto-login TX attempts this boot (not persisted)
+  uint8_t  _room_auto_tries[ROOM_CRED_MAX] = {0};
+  uint8_t  _auto_login_wait_rounds = 0;  // contact-not-found reschedule budget
+  uint8_t  _login_pending_prefix[6] = {0};
+  char     _login_pending_pwd[16] = {0};
+  bool     _login_pending_auto = true;
+  bool     _login_pending_valid = false;
+  uint32_t _login_pending_ms = 0;  // millis when pending started (timeout stuck logins)
+  uint32_t _auto_login_at = 0;   // millis when to run next auto-login (0 = idle)
+  static constexpr uint32_t LOGIN_PENDING_TIMEOUT_MS = 20000;
+
+  // Room backlog sync guard (half-duplex: TX mid-push drops server ACKs)
+  static constexpr uint32_t ROOM_SYNC_MIN_MS   = 3000;   // min block after login
+  static constexpr uint32_t ROOM_SYNC_QUIET_MS = 5000;   // no posts for this long
+  static constexpr uint32_t ROOM_SYNC_MAX_MS   = 60000;  // hard cap
+  static constexpr int      ROOM_SYNC_SLOTS    = 4;
+  struct RoomSync {
+    uint8_t  prefix[6];
+    uint32_t login_ms;
+    uint32_t last_rx_ms;
+    bool     active;
+  };
+  RoomSync _room_sync[ROOM_SYNC_SLOTS] = {};
+
+  int  roomCredIndex(const uint8_t* prefix6) const;
+  void markRoomSessionOk(const uint8_t* prefix6);
+  bool roomNeedsAutoLogin(int idx) const;
+  void clearLoginPending(const char* why);
+  void beginRoomSync(const uint8_t* prefix6);
+  void noteRoomSyncRx(const uint8_t* prefix6);
+  void endRoomSync(const uint8_t* prefix6, const char* why);
+  int  roomSyncIndex(const uint8_t* prefix6) const;
+
   // pending nav
   int _pending_thread = -1;
   char _qr_url[128];
@@ -257,6 +362,13 @@ private:
   // heard ring
   HeardEntry _heard[HEARD_MAX];
   int _heard_count = 0, _heard_head = 0;
+
+  // recent full contacts seen via advert (so Last Heard → Save works with auto-add off)
+  static const int RECENT_CONTACTS = 16;
+  ContactInfo _recent_ct[RECENT_CONTACTS];
+  int _recent_ct_count = 0;
+  int _recent_ct_head = 0;
+
 
   // noise ring
   int8_t _noise[NOISE_SAMPLES];
@@ -295,7 +407,12 @@ private:
 };
 
 // text helpers (implemented in UITask.cpp, used by screens)
+// Adafruit GFX default font is 7-bit ASCII only — never pass UTF-8 / fancy punctuation
+// to print()/printf or you get garbage glyphs.
 int drawRichText(GFXcanvas16& cv, int x, int y, int max_w, const char* text,
                  uint16_t color, int text_size);   // returns height used; handles wrap + emoji
 int measureRichTextHeight(GFXcanvas16& cv, int max_w, const char* text, int text_size);
+// Copy src → dst, keep printable ASCII (0x20-0x7E), replace others with '?', then ellipsize.
 void ellipsize(char* dst, size_t dst_sz, const char* src);
+// In-place: keep only printable ASCII; multi-byte UTF-8 → single '?'.
+void sanitizeAscii(char* s);

@@ -18,9 +18,6 @@ static const AppDef APPS[] = {
   { "Settings",  SCR_SETTINGS,  C_FG_DIM, 'S', false },
   { "WiFi",      SCR_WIFI,      C_ACCENT, 'W', false },
   { "Channels",  SCR_CHANNELS,  C_ORANGE, '#', false },
-#ifdef MESHDECK_BETA
-  { "Voice",     SCR_VOICE,     C_PINK,   'V', false },   // beta: audio PoC
-#endif
 };
 #define N_APPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
 

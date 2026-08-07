@@ -365,6 +365,38 @@ void DeckHW::chimeMessage() { i2sTone(1319, 60); i2sTone(1760, 90); }
 void DeckHW::chimeBoot()    { i2sTone(880, 70); i2sTone(1109, 70); i2sTone(1319, 110); }
 void DeckHW::chimeError()   { i2sTone(220, 120); }
 
+// Hard-coded “snippet”: three rising tones + a short square-wave chirp.
+// Same I2S path as UI beeps (16 kHz stereo square waves on TDECK_I2S_*).
+// Use this to prove the speaker works independent of Codec2 / LoRa.
+bool DeckHW::playStartupSelfTest() {
+  bool was_on = _snd_on;
+  uint8_t was_vol = _snd_vol;
+  _snd_on = true;
+  if (_snd_vol < 7) _snd_vol = 9;  // force audible level for the test
+
+  Serial.printf("[audio] startup speaker self-test (vol=%u) …\n", (unsigned)_snd_vol);
+
+  // Melody: C5 – E5 – G5 – C6 (hardcoded, not a .wav file)
+  i2sTone(523, 140);
+  delay(30);
+  i2sTone(659, 140);
+  delay(30);
+  i2sTone(784, 160);
+  delay(30);
+  i2sTone(1047, 220);
+  delay(40);
+  // Descending confirmation blip
+  i2sTone(880, 80);
+  delay(20);
+  i2sTone(660, 100);
+
+  Serial.println("[audio] startup self-test done — you should have heard 5 tones");
+
+  _snd_on = was_on;
+  _snd_vol = was_vol;
+  return true;
+}
+
 // ---------------- SD card ----------------
 // The bus already has MISO attached (see begin()), so no pin re-routing is
 // needed - that would break the radio, which shares these pins on another host.

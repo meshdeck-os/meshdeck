@@ -75,6 +75,10 @@
 #define REQ_TYPE_GET_STATUS             0x01 // same as _GET_STATS
 #define REQ_TYPE_KEEP_ALIVE             0x02
 #define REQ_TYPE_GET_TELEMETRY_DATA     0x03
+#define REQ_TYPE_VOICE_CODEC2        0xC2
+
+#define DATA_TYPE_VOICE_CODEC2_700  0xC270
+
 
 struct AdvertPath {
   uint8_t pubkey_prefix[7];
@@ -110,6 +114,33 @@ public:
   float getLastSNR() const;
   bool advertFlood();
   void applyRadioPrefs();   // push _prefs radio params to the radio driver
+  // Voice is short-range by design: direct path only, max 1 hop (own repeater).
+  // Never flood-forwards multi-hop via the wider mesh.
+  static constexpr uint8_t VOICE_MAX_HOPS = 1;
+  // Hop count from ContactInfo.out_path_len (0xFF = unknown / no path yet).
+  static uint8_t voiceHopCount(uint8_t out_path_len);
+  // true if contact is call-eligible (known path with hops <= VOICE_MAX_HOPS,
+  // or unknown path → will be forced to zero-hop).
+  bool canVoiceCallContact(const ContactInfo& to) const;
+  // out_tag: optional; filled with MeshCore request tag used for ACK matching.
+  // is_retx: skip media ACK-slot registration (caller updates the existing slot).
+  bool sendVoiceToContact(const ContactInfo& to, const uint8_t* data, size_t len,
+                        bool eos, bool is_retx = false, uint32_t* out_tag = nullptr);
+  bool sendVoiceToChannel(const mesh::GroupChannel& ch, const uint8_t* data, size_t len, bool eos);
+
+  // Room/repeater login: sendLogin + track pending so UI gets onLoginResult
+  int loginWithPassword(const ContactInfo& recipient, const char* password,
+                        uint32_t& est_timeout);
+  // Public wrappers (BaseChatMesh marks these protected)
+  bool isLoggedInto(const uint8_t* pub_key) { return hasConnectionTo(pub_key); }
+  void endServerSession(const uint8_t* pub_key) { stopConnection(pub_key); }
+  // Complete a pending login (OK/FAIL). Safe no-op if not pending for this peer.
+  void completePendingLogin(const ContactInfo& contact, bool ok);
+  // Ensure keep-alive connection slot exists (e.g. after room history without RESPONSE).
+  void ensureServerSession(const ContactInfo& contact);
+  // Zero sync_since and persist so next login re-requests full room backlog
+  bool resetRoomSyncSince(ContactInfo& contact);
+
 
 protected:
   float getAirtimeBudgetFactor() const override;
@@ -120,7 +151,6 @@ protected:
   uint8_t getExtraAckTransmitCount() const override;
   bool filterRecvFloodPacket(mesh::Packet* packet) override;
   bool allowPacketForward(const mesh::Packet* packet) override;
-
   void sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis);
   void sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis=0) override;
   void sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t delay_millis=0) override;
@@ -175,6 +205,8 @@ protected:
 public:
   void savePrefs() { _store->savePrefs(_prefs, sensors.node_lat, sensors.node_lon); }
   void saveChannels() { _store->saveChannels(this); }   // persist group channels (used by the Channels UI)
+  // helpers, short-cuts
+  void saveContacts();
 
 #if ENV_INCLUDE_GPS == 1
   void applyGpsPrefs() {
@@ -208,9 +240,6 @@ private:
   void checkCLIRescueCmd();
   void checkSerialInterface();
   bool isValidClientRepeatFreq(uint32_t f) const;
-
-  // helpers, short-cuts
-  void saveContacts();
 
   DataStore* _store;
   NodePrefs _prefs;

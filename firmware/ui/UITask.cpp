@@ -16,16 +16,70 @@
 #include <SD.h>
 
 #define SETTINGS_FILE "/meshdeck_set.bin"
+#define ROOM_CRED_FILE "/meshdeck_rooms.bin"
+#define ROOM_CRED_MAGIC 0x524D4331u  // "RMC1"
+
+
 
 // ---------------------------------------------------------------- text utils
+// Built-in GFX font: glyphs for 0x20..0x7E only. UTF-8 / · / – / … print as junk.
+
+void sanitizeAscii(char* s) {
+  if (!s) return;
+  char* w = s;
+  const unsigned char* r = (const unsigned char*)s;
+  while (*r) {
+    unsigned char c = *r++;
+    if (c >= 0x20 && c <= 0x7E) {
+      *w++ = (char)c;
+    } else if (c >= 0xC0) {
+      // Skip rest of UTF-8 sequence, emit one '?'
+      if ((c & 0xE0) == 0xC0) { if (*r) r++; }
+      else if ((c & 0xF0) == 0xE0) { if (*r) r++; if (*r) r++; }
+      else if ((c & 0xF8) == 0xF0) { if (*r) r++; if (*r) r++; if (*r) r++; }
+      *w++ = '?';
+    } else if (c == '\n' || c == '\t') {
+      *w++ = ' ';
+    }
+    // drop other controls
+  }
+  *w = 0;
+}
 
 void ellipsize(char* dst, size_t dst_sz, const char* src) {
-  size_t n = strlen(src);
-  if (n < dst_sz) { strcpy(dst, src); return; }
-  size_t keep = dst_sz - 3;
-  memcpy(dst, src, keep);
-  dst[keep] = dst[keep + 1] = '.';
-  dst[keep + 2] = 0;
+  if (!dst || dst_sz == 0) return;
+  if (!src) { dst[0] = 0; return; }
+  // Sanitize into dst first (printable ASCII only)
+  size_t wi = 0;
+  const unsigned char* r = (const unsigned char*)src;
+  while (*r && wi + 1 < dst_sz) {
+    unsigned char c = *r++;
+    if (c >= 0x20 && c <= 0x7E) {
+      dst[wi++] = (char)c;
+    } else if (c >= 0xC0) {
+      if ((c & 0xE0) == 0xC0) { if (*r) r++; }
+      else if ((c & 0xF0) == 0xE0) { if (*r) r++; if (*r) r++; }
+      else if ((c & 0xF8) == 0xF0) { if (*r) r++; if (*r) r++; if (*r) r++; }
+      if (wi + 1 < dst_sz) dst[wi++] = '?';
+    } else if (c == '\n' || c == '\t') {
+      if (wi + 1 < dst_sz) dst[wi++] = ' ';
+    }
+  }
+  dst[wi] = 0;
+  // Ellipsize if we filled the buffer (source still had more)
+  if (*r && dst_sz >= 4) {
+    size_t keep = dst_sz - 4;  // room for "..." + NUL
+    dst[keep] = '.';
+    dst[keep + 1] = '.';
+    dst[keep + 2] = '.';
+    dst[keep + 3] = 0;
+  } else if (wi >= dst_sz - 1 && dst_sz >= 4) {
+    // truncated by buffer; add ellipsis
+    dst[dst_sz - 4] = '.';
+    dst[dst_sz - 3] = '.';
+    dst[dst_sz - 2] = '.';
+    dst[dst_sz - 1] = 0;
+  }
 }
 
 // tiny emoji glyphs, drawn procedurally (12x12)
@@ -169,6 +223,7 @@ void UITask::earlyInit() {
   set.always_on = 0;
   set.man_lat = set.man_lon = 0;
   set.touch_map = 2;          // correct T-Deck landscape mapping (swap XY + mirror)
+  set.room_login_tries = AUTO_LOGIN_TRIES_DEFAULT;
 
   hw.begin(false);
 
@@ -235,6 +290,9 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
   if (_wifi_want && _wifi_ssid[0]) { WiFi.mode(WIFI_STA); WiFi.begin(_wifi_ssid, _wifi_pass); }
 
   store.begin();
+  loadRoomCreds();
+  // Auto-login saved rooms a few seconds after boot (mesh + paths settle)
+  if (_room_cred_n > 0) _auto_login_at = millis() + 8000;
 
   _screens[SCR_HOME]      = new HomeScreen(*this);
   _screens[SCR_CHAT]      = new ChatScreen(*this);
@@ -254,6 +312,7 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
   _screens[SCR_WIFI]      = new WifiScreen(*this);
   _screens[SCR_CHANNELS]  = new ChannelsScreen(*this);
   _screens[SCR_VOICE]     = new VoiceScreen(*this);
+
 
   termLog(C_TERM_SYS, "MeshDeck v%s on MeshCore %s", MESHDECK_VERSION, FIRMWARE_VERSION);
   // NOTE: format the floats separately - StrHelper::ftoa returns a shared static
@@ -290,7 +349,12 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
     termLog(C_TERM_SYS, "sd card: no map packs in /meshdeck-maps");
   }
 
-  hw.chimeBoot();
+  // Speaker hardware self-test (after display/I2C/settings are up).
+  // Hardcoded multi-tone jingle — not Codec2, not LoRa. If you hear this,
+  // the amp + I2S pins work; voice silence is then encode/path, not the speaker.
+  termLog(C_TERM_SYS, "audio self-test...");
+  hw.playStartupSelfTest();
+  termLog(C_TERM_SYS, "audio self-test done (5 tones)");
 }
 
 void UITask::reloadSDMaps() {
@@ -327,6 +391,8 @@ void UITask::applySettings() {
   if (set.tb_speed < 1 || set.tb_speed > 5) set.tb_speed = 3;   // default: medium
   // speed 1..5  ->  pulses-per-step 5,4,3,2,1  (higher speed = fewer pulses)
   hw.setTrackballStep(6 - set.tb_speed);
+  if (set.room_login_tries < 1 || set.room_login_tries > AUTO_LOGIN_TRIES_MAX)
+    set.room_login_tries = AUTO_LOGIN_TRIES_DEFAULT;
   if (set.man_lat != 0 || set.man_lon != 0) {
     if (sensors && sensors->node_lat == 0 && sensors->node_lon == 0) {
       sensors->node_lat = set.man_lat / 1000000.0;
@@ -339,6 +405,7 @@ void UITask::applySettings() {
 
 void UITask::go(ScreenId id) {
   if (id == _cur) return;
+  if (_screens[_cur]) _screens[_cur]->leave();
   if (_stack_len < 8) _stack[_stack_len++] = _cur;
   _cur = id;
   _screens[_cur]->enter();
@@ -346,6 +413,7 @@ void UITask::go(ScreenId id) {
 }
 
 void UITask::back() {
+  if (_screens[_cur]) _screens[_cur]->leave();
   if (_stack_len > 0) {
     _cur = _stack[--_stack_len];
     _screens[_cur]->enter();
@@ -357,6 +425,7 @@ void UITask::back() {
 }
 
 void UITask::goHome() {
+  if (_screens[_cur]) _screens[_cur]->leave();
   _stack_len = 0;
   _cur = SCR_HOME;
   _screens[_cur]->enter();
@@ -365,6 +434,7 @@ void UITask::goHome() {
 
 void UITask::toast(const char* msg, uint16_t color) {
   StrHelper::strncpy(_toast, msg, sizeof(_toast));
+  sanitizeAscii(_toast);  // GFX font: no UTF-8 / fancy punctuation
   _toast_color = color;
   _toast_until = millis() + 2600;
   _dirty = true;
@@ -425,15 +495,265 @@ void UITask::notify(UIEventType t) {
   _dirty = true;
 }
 
+
+void UITask::reresolveThreadSenders(DeckThread* t) {
+  if (!t || !mesh || t->kind != TK_CONTACT) return;
+
+  for (int i = 0; i < t->count; i++) {
+    DeckMsg* m = store.msgAt(t, i);
+    if (!m || !m->sender[0]) continue;
+
+    // Already looks like a real name? skip
+    // Hex fallback from our room code is exactly 8 hex chars
+    bool is_hex_id = (strlen(m->sender) == 8);
+    if (is_hex_id) {
+      for (int k = 0; k < 8; k++) {
+        char c = m->sender[k];
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) {
+          is_hex_id = false;
+          break;
+        }
+      }
+    }
+
+    bool is_room_name = (strcmp(m->sender, t->title) == 0);
+
+    if (!is_hex_id && !is_room_name) continue;
+
+    // Try to resolve
+    ContactInfo* author = nullptr;
+
+    if (is_hex_id) {
+      uint8_t prefix[4];
+      auto hex = [](char c) -> uint8_t {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return 0;
+      };
+      for (int b = 0; b < 4; b++) {
+        prefix[b] = (hex(m->sender[b * 2]) << 4) | hex(m->sender[b * 2 + 1]);
+      }
+
+      author = mesh->lookupContactByPubKey(prefix, 4);
+      if (!author) {
+        int n = mesh->getNumContacts();
+        for (int ci = 0; ci < n; ci++) {
+          ContactInfo ct;
+          if (mesh->getContactByIdx(ci, ct) &&
+              memcmp(ct.id.pub_key, prefix, 4) == 0) {
+            static ContactInfo found;
+            found = ct;
+            author = &found;
+            break;
+          }
+        }
+      }
+    }
+
+    if (author && author->name[0]) {
+      StrHelper::strncpy(m->sender, author->name, sizeof(m->sender));
+    }
+  }
+
+  // Persist so the fix survives reboot
+  store.save();
+}
+
+void UITask::onVoiceRecv(const mesh::GroupChannel& channel,
+                         const uint8_t* voice_data, size_t len,
+                         bool end_of_stream, float snr) {
+#ifndef MESHDECK_BETA
+  (void)channel; (void)voice_data; (void)len; (void)end_of_stream; (void)snr;
+  return;  // voice media is beta-only
+#else
+  char name[32] = "channel";
+  ChannelDetails det;
+  for (int i = 0; i < 40; i++) {
+    if (mesh && mesh->getChannel(i, det) &&
+        memcmp(&det.channel, &channel, sizeof(channel)) == 0) {
+      StrHelper::strncpy(name, det.name, sizeof(name));
+      break;
+    }
+  }
+
+  // Live voice stays on the call UI only — do not spam chat with "voice 0.9s".
+  VoiceScreen* vs = static_cast<VoiceScreen*>(_screens[SCR_VOICE]);
+  if (vs) vs->pushRxVoice(voice_data, len, end_of_stream, name, snr, nullptr);
+
+  if (!hw.isDisplayOn()) hw.displayOn();
+  requestDraw();
+#endif
+}
+void UITask::onVoicePacketSent(uint32_t tag, uint16_t len, bool eos) {
+#ifndef MESHDECK_BETA
+  (void)tag; (void)len; (void)eos;
+#else
+  VoiceScreen* vs = static_cast<VoiceScreen*>(_screens[SCR_VOICE]);
+  if (vs) vs->onPacketSent(tag, len, eos);
+#endif
+}
+
+void UITask::onVoicePacketAcked(uint32_t tag, bool eos) {
+#ifndef MESHDECK_BETA
+  (void)tag; (void)eos;
+#else
+  VoiceScreen* vs = static_cast<VoiceScreen*>(_screens[SCR_VOICE]);
+  if (vs) vs->onPacketAcked(tag, eos);
+#endif
+}
+void UITask::onVoiceRecvFromContact(const ContactInfo& from,
+                                    const uint8_t* voice_data, size_t len,
+                                    bool end_of_stream, float snr) {
+#ifndef MESHDECK_BETA
+  (void)from; (void)voice_data; (void)len; (void)end_of_stream; (void)snr;
+  return;  // call signaling + media are beta-only
+#else
+  // Control frames (flags bit7) are signaling only — no beep.
+  // INVITE rings once inside VoiceScreen::handleCallControl.
+  // Live call media is never written to chat (was "voice 0.9s" spam each burst).
+  const bool is_ctrl = (len >= 1 && (voice_data[0] & 0x80) != 0);
+
+  VoiceScreen* vs = static_cast<VoiceScreen*>(_screens[SCR_VOICE]);
+  if (vs) vs->pushRxVoice(voice_data, len, end_of_stream, from.name, snr, &from);
+
+  if (!is_ctrl) {
+    // Soft activity only for media; don't beep every packet during a call
+    if (!hw.isDisplayOn()) hw.displayOn();
+  }
+  // Avoid redraw storms during media (chat was the old reason to draw)
+  if (is_ctrl || end_of_stream)
+    requestDraw();
+#endif
+}
 void UITask::onContactMsg(const ContactInfo& from, const char* text, uint32_t sender_ts,
-                          uint8_t path_len, float snr) {
+                          uint8_t path_len, float snr, const uint8_t* sender_prefix) {
+  uint32_t ts = sender_ts ? sender_ts : epochNow();
+
+  char sender[MD_SENDER_LEN];
+  const char* body = text;
+  bool got_name = false;
+
+  // ---- 1. Resolve real author from signed-plain 4-byte prefix ----
+  if (sender_prefix && mesh) {
+    ContactInfo* author = mesh->lookupContactByPubKey(sender_prefix, 4);
+
+    // Brute-force fallback in case the normal lookup misses
+    if (!author) {
+      int n = mesh->getNumContacts();
+      for (int i = 0; i < n; i++) {
+        ContactInfo ct;
+        if (mesh->getContactByIdx(i, ct) &&
+            memcmp(ct.id.pub_key, sender_prefix, 4) == 0) {
+          static ContactInfo found;
+          found = ct;
+          author = &found;
+          break;
+        }
+      }
+    }
+
+    if (author && author->name[0]) {
+      StrHelper::strncpy(sender, author->name, sizeof(sender));
+      got_name = true;
+    } else {
+      // Unknown author – show short id instead of the room name
+      snprintf(sender, sizeof(sender), "%02X%02X%02X%02X",
+               sender_prefix[0], sender_prefix[1],
+               sender_prefix[2], sender_prefix[3]);
+      got_name = true;
+    }
+  }
+
+  // ---- 2. Fallback: classic "Name: message" text convention ----
+  if (!got_name) {
+    const char* colon = strchr(text, ':');
+    if (colon && (colon - text) >= 1 && (colon - text) <= 16) {
+      size_t sl = colon - text;
+      bool looks_like_name = true;
+      for (size_t i = 0; i < sl; i++) {
+        char ch = text[i];
+        if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+              (ch >= '0' && ch <= '9') || ch == ' ' || ch == '_' ||
+              ch == '-' || ch == '.')) {
+          looks_like_name = false;
+          break;
+        }
+      }
+      int spaces = 0;
+      for (size_t i = 0; i < sl; i++) if (text[i] == ' ') spaces++;
+      if (spaces > 1) looks_like_name = false;
+
+      if (looks_like_name) {
+        memcpy(sender, text, sl);
+        sender[sl] = 0;
+        body = colon + 1;
+        while (*body == ' ') body++;
+        got_name = true;
+      }
+    }
+  }
+
+  // ---- 3. Last resort: room / contact name ----
+  if (!got_name) {
+    StrHelper::strncpy(sender, from.name, sizeof(sender));
+  }
+
+  if (!body || !*body) body = text;
+
+  // ---- debug ----
+  termLog(C_TERM_SYS, "onContactMsg from=%s prefix=%s -> sender='%s' text=%.40s",
+          from.name,
+          sender_prefix ? "yes" : "no",
+          sender,
+          text);
+
+  // Sanitize for GFX (room posts can include UTF-8 / emoji)
+  char sender_clean[MD_SENDER_LEN];
+  char body_clean[MD_TEXT_LEN];
+  StrHelper::strncpy(sender_clean, sender, sizeof(sender_clean));
+  StrHelper::strncpy(body_clean, body, sizeof(body_clean));
+  sanitizeAscii(sender_clean);
+  sanitizeAscii(body_clean);
+  if (!body_clean[0] && body && body[0]) {
+    // Sanitize wiped body — keep a placeholder so the post is still visible
+    StrHelper::strncpy(body_clean, "(message)", sizeof(body_clean));
+  }
+
+  // ---- store + UI ----
   DeckThread* t = store.forContact(from.id.pub_key, from.name);
   if (t) {
-    store.addMsg(t, from.name, text, epochNow(), 0, (int8_t)(snr * 4), path_len, 0);
+    store.addMsg(t, sender_clean, body_clean, ts, 0, (int8_t)(snr * 4), path_len, 0);
+  } else {
+    termLog(C_TERM_ERR, "store full — dropped msg from %s", from.name);
   }
-  termLog(C_TERM_RX, "[DM] %s: %s", from.name, text);
+
+  // Room/repeater: show backlog in console; establish session if missing.
+  // History often arrives before (or without) a formal login RESPONSE.
+  // Same receive path as upstream meshdeck; messages land in the room's chat thread.
+  if (from.type == ADV_TYPE_ROOM || from.type == ADV_TYPE_REPEATER) {
+    if (mesh) {
+      mesh->completePendingLogin(from, true);  // no-op if not pending
+      mesh->ensureServerSession(from);
+    }
+    if (!roomSessionOk(from.id.pub_key))
+      markRoomSessionOk(from.id.pub_key);
+    // Extend backlog sync quiet timer (each post = more coming)
+    if (from.type == ADV_TYPE_ROOM)
+      noteRoomSyncRx(from.id.pub_key);
+    char line[72];
+    snprintf(line, sizeof(line), "%s: %.48s", sender_clean, body_clean);
+    repLog(from.name, line);
+    termLog(C_TERM_RX, "[room/%s] %s: %s", from.name, sender_clean, body_clean);
+  } else {
+    termLog(C_TERM_RX, "[DM] %s: %s", sender_clean, body_clean);
+  }
+
   char buf[48];
-  snprintf(buf, sizeof(buf), "%s: %.24s", from.name, text);
+  if (from.type == ADV_TYPE_ROOM)
+    snprintf(buf, sizeof(buf), "%s | %.20s", from.name, body_clean);
+  else
+    snprintf(buf, sizeof(buf), "%s: %.24s", sender_clean, body_clean);
   if (_cur != SCR_CHAT) toast(buf, C_GREEN);
   hw.chimeMessage();
   if (!hw.isDisplayOn()) hw.displayOn();
@@ -446,13 +766,31 @@ void UITask::onCliResponse(const ContactInfo& from, const char* text) {
   repLog(from.name, text);
   _dirty = true;
 }
+void UITask::rememberRecentContact(const ContactInfo& c) {
+  // de-dupe by 6-byte prefix
+  for (int i = 0; i < _recent_ct_count; i++) {
+    if (memcmp(_recent_ct[i].id.pub_key, c.id.pub_key, 6) == 0) {
+      _recent_ct[i] = c;
+      return;
+    }
+  }
+  _recent_ct[_recent_ct_head] = c;
+  _recent_ct_head = (_recent_ct_head + 1) % RECENT_CONTACTS;
+  if (_recent_ct_count < RECENT_CONTACTS) _recent_ct_count++;
+}
 
+ContactInfo* UITask::findRecentContact(const uint8_t* prefix6) {
+  for (int i = 0; i < _recent_ct_count; i++) {
+    if (memcmp(_recent_ct[i].id.pub_key, prefix6, 6) == 0)
+      return &_recent_ct[i];
+  }
+  return nullptr;
+}
 void UITask::onChannelMsg(uint8_t channel_idx, const char* channel_name, const char* text,
                           uint32_t ts, uint8_t path_len, float snr) {
-  // MeshCore convention: channel text is "SenderName: message"
   char sender[MD_SENDER_LEN];
   const char* body = strchr(text, ':');
-  if (body && body - text < MD_SENDER_LEN + 12) {
+  if (body && body - text < (int)sizeof(sender) + 12) {
     size_t sl = body - text;
     if (sl >= sizeof(sender)) sl = sizeof(sender) - 1;
     memcpy(sender, text, sl);
@@ -463,10 +801,29 @@ void UITask::onChannelMsg(uint8_t channel_idx, const char* channel_name, const c
     strcpy(sender, "?");
     body = text;
   }
+
+  // Prefer a plausible sender timestamp; otherwise use local epoch
+  uint32_t now = epochNow();
+  uint32_t msg_ts = ts;
+  if (msg_ts < 1000000000UL || msg_ts > now + 3600UL) {
+    msg_ts = now;   // not a sane unix epoch → use receive time
+  }
+
+  termLog(C_TERM_SYS,
+          "chMsg idx=%u ts_in=%lu now=%lu use=%lu hops=%u snr=%.1f from=%s",
+          (unsigned)channel_idx,
+          (unsigned long)ts,
+          (unsigned long)now,
+          (unsigned long)msg_ts,
+          (unsigned)path_len,
+          snr,
+          sender);
+
   DeckThread* t = store.forChannel(channel_idx, channel_name);
   if (t) {
-    store.addMsg(t, sender, body, epochNow(), 0, (int8_t)(snr * 4), path_len, 0);
+    store.addMsg(t, sender, body, msg_ts, 0, (int8_t)(snr * 4), path_len, 0);
   }
+
   termLog(C_TERM_RX, "[#%s] %s", channel_name, text);
   char buf[48];
   snprintf(buf, sizeof(buf), "#%s %.20s", channel_name, text);
@@ -485,6 +842,8 @@ void UITask::onAckDelivered(uint32_t ack, const ContactInfo* contact, uint32_t t
 }
 
 void UITask::onAdvertSeen(const ContactInfo& contact, bool is_new, uint8_t path_len) {
+  rememberRecentContact(contact);
+  
   HeardEntry* e = &_heard[_heard_head];
   memset(e, 0, sizeof(*e));
   StrHelper::strncpy(e->name, contact.name, sizeof(e->name));
@@ -500,7 +859,8 @@ void UITask::onAdvertSeen(const ContactInfo& contact, bool is_new, uint8_t path_
   if (_heard_count < HEARD_MAX) _heard_count++;
 
   termLog(C_TERM_SYS, "advert: %s (%s%s)", contact.name,
-          contact.type == ADV_TYPE_REPEATER ? "repeater" : contact.type == ADV_TYPE_ROOM ? "room" : "chat",
+          contact.type == ADV_TYPE_REPEATER ? "repeater" :
+          contact.type == ADV_TYPE_ROOM ? "room" : "chat",
           is_new ? ", new" : "");
   if (is_new) {
     char buf[48];
@@ -508,6 +868,12 @@ void UITask::onAdvertSeen(const ContactInfo& contact, bool is_new, uint8_t path_
     toast(buf, C_PURPLE);
   }
   _dirty = true;
+
+#ifdef MESHDECK_BETA
+  VoiceScreen* vs = static_cast<VoiceScreen*>(_screens[SCR_VOICE]);
+  if (vs) vs->onTargetAdvert(contact);
+#endif
+
 }
 
 void UITask::onRawRx(float snr, float rssi, int len) {
@@ -588,6 +954,7 @@ ContactInfo* UITask::contactByPrefix(const uint8_t* prefix6) {
 bool UITask::sendDM(const uint8_t* pub_prefix, const char* text) {
   ContactInfo* c = contactByPrefix(pub_prefix);
   if (!c) { toast("Contact not found", C_RED); return false; }
+  if (!allowSendToContact(*c, true)) return false;
   uint32_t expected_ack = 0, est_timeout = 0;
   int res = mesh->sendMessage(*c, epochNow(), 0, text, expected_ack, est_timeout);
   if (res == MSG_SEND_FAILED) {
@@ -632,9 +999,61 @@ bool UITask::startTrace(const ContactInfo& target) {
   return true;
 }
 
+bool UITask::startVoiceCall(const ContactInfo& to) {
+#ifdef MESHDECK_BETA
+  VoiceScreen* vs = static_cast<VoiceScreen*>(_screens[SCR_VOICE]);
+  if (!vs) {
+    toast("Voice unavailable", C_RED);
+    return false;
+  }
+  if (vs->isInCall()) {
+    toast("Already in a call", C_YELLOW);
+    return false;
+  }
+  if (!mesh) {
+    toast("No mesh", C_RED);
+    return false;
+  }
+  // Voice is local-only: direct or 1 hop (e.g. your own repeater). No mesh flood.
+  ContactInfo live = to;
+  if (ContactInfo* p = mesh->lookupContactByPubKey(to.id.pub_key, 6))
+    live = *p;
+  if (!mesh->canVoiceCallContact(live)) {
+    uint8_t hops = MyMesh::voiceHopCount(live.out_path_len);
+    char msg[56];
+    snprintf(msg, sizeof(msg), "Call needs <=%u hop (path %u hops)",
+             (unsigned)MyMesh::VOICE_MAX_HOPS, (unsigned)hops);
+    toast(msg, C_YELLOW);
+    termLog(C_TERM_ERR, "voice call blocked: %s path hops=%u max=%u",
+            live.name, (unsigned)hops, (unsigned)MyMesh::VOICE_MAX_HOPS);
+    return false;
+  }
+  {
+    uint8_t hops = MyMesh::voiceHopCount(live.out_path_len);
+    if (hops == 0xFF)
+      termLog(C_TERM_SYS, "voice call %s: no path → zero-hop direct", live.name);
+    else
+      termLog(C_TERM_SYS, "voice call %s: %u hop path", live.name, (unsigned)hops);
+  }
+  vs->prepareOutbound(live);
+  go(SCR_VOICE);   // enter() auto-sends INVITE
+  return true;
+#else
+  (void)to;
+  toast("Voice requires beta build", C_YELLOW);
+  return false;
+#endif
+}
+
 void UITask::repLog(const char* from, const char* text) {
+  // Sanitize for GFX font before queueing on the console list
+  char fbuf[32], tbuf[72];
+  StrHelper::strncpy(fbuf, from ? from : "?", sizeof(fbuf));
+  StrHelper::strncpy(tbuf, text ? text : "", sizeof(tbuf));
+  sanitizeAscii(fbuf);
+  sanitizeAscii(tbuf);
   RepeatersScreen* r = (RepeatersScreen*)_screens[SCR_REPEATERS];
-  if (r) r->onCliResponse(from, text);
+  if (r) r->onCliResponse(fbuf, tbuf);
 }
 
 // ---------------------------------------------------------------- status helpers
@@ -700,12 +1119,52 @@ void UITask::fmtClock(char* out, size_t sz) const {
 
 void UITask::fmtAgo(char* out, size_t sz, uint32_t then) const {
   uint32_t now = epochNow();
-  if (then == 0 || then > now) { snprintf(out, sz, "-"); return; }
+  if (then == 0 || then > now) {
+    snprintf(out, sz, "-");
+    return;
+  }
   uint32_t d = now - then;
-  if (d < 60) snprintf(out, sz, "%us", d);
-  else if (d < 3600) snprintf(out, sz, "%um", d / 60);
-  else if (d < 86400) snprintf(out, sz, "%uh", d / 3600);
-  else snprintf(out, sz, "%ud", d / 86400);
+  if (d < 60) snprintf(out, sz, "%lus", (unsigned long)d);
+  else if (d < 3600) snprintf(out, sz, "%lum", (unsigned long)(d / 60));
+  else if (d < 86400) snprintf(out, sz, "%luh", (unsigned long)(d / 3600));
+  else snprintf(out, sz, "%lud", (unsigned long)(d / 86400));
+}
+
+void UITask::fmtContactPath(char* out, size_t sz, const ContactInfo& ct) const {
+  if (!out || sz == 0) return;
+  out[0] = 0;
+  // 0xFF / OUT_PATH_UNKNOWN = no stored direct path (send will flood)
+  if (ct.out_path_len == 0xFF) {
+    snprintf(out, sz, "flood (no path)");
+    return;
+  }
+  // path_len packs hop count (low 6 bits) and hash size (high 2 bits: 0→1B, 1→2B, 2→3B)
+  uint8_t hops = (uint8_t)(ct.out_path_len & 63);
+  uint8_t hsz  = (uint8_t)((ct.out_path_len >> 6) + 1);
+  if (hsz > 3) hsz = 1;
+  if (hops == 0) {
+    snprintf(out, sz, "direct");
+    return;
+  }
+  size_t used = 0;
+  for (uint8_t h = 0; h < hops; h++) {
+    if (h > 0) {
+      if (used + 4 >= sz) break;
+      out[used++] = ' ';
+      out[used++] = '>';
+      out[used++] = ' ';
+      out[used] = 0;
+    }
+    for (uint8_t b = 0; b < hsz; b++) {
+      if (used + 3 >= sz) break;
+      uint8_t v = ct.out_path[(size_t)h * hsz + b];
+      static const char* hex = "0123456789abcdef";
+      out[used++] = hex[(v >> 4) & 0xF];
+      out[used++] = hex[v & 0xF];
+      out[used] = 0;
+    }
+  }
+  if (used == 0) snprintf(out, sz, "direct");
 }
 
 void UITask::drawStatusBar(const char* title) {
@@ -802,6 +1261,18 @@ void UITask::loop() {
 
   dispatchInput();
 
+#ifdef MESHDECK_BETA
+  // TX: drain encode queue on loop. RX decode runs on dedicated c2dec task
+  // (large internal stack; half-duplex with c2work).
+  {
+    VoiceScreen* vs = static_cast<VoiceScreen*>(_screens[SCR_VOICE]);
+    if (vs && (_cur == SCR_VOICE || vs->isInCall())) {
+      vs->pollPTT();
+      vs->pollRxPlayback();  // ensures c2dec is alive while listening
+    }
+  }
+#endif
+
   // auto-advert: periodic flood advert so nearby nodes keep discovering us
   if (set.adv_interval_min > 0) {
     uint32_t period = (uint32_t)set.adv_interval_min * 60000UL;
@@ -817,25 +1288,24 @@ void UITask::loop() {
   }
 
   // NTP clock sync: when WiFi is connected, fetch UTC once and set the RTC.
-  // The RTC stays in UTC; the home clock applies the timezone offset for display.
   if (wifiState() == 2) {
     if (!_ntp_started) {
-      configTime(0, 0, "pool.ntp.org", "time.nist.gov");   // 0 offset = UTC
+      configTime(0, 0, "pool.ntp.org", "time.nist.gov");
       _ntp_started = true;
       _ntp_last_try = millis();
     } else if (!_ntp_done && millis() - _ntp_last_try > 500) {
       _ntp_last_try = millis();
       time_t now = time(nullptr);
-      if (now > 1700000000) {                 // valid epoch (after Nov 2023)
+      if (now > 1700000000) {
         if (mesh) mesh->getRTCClock()->setCurrentTime((uint32_t)now);
         _ntp_done = true;
         toast("Clock synced (NTP)", C_GREEN);
       }
     }
   } else {
-    _ntp_started = false;   // re-sync on the next WiFi connection
+    _ntp_started = false;
     _ntp_done = false;
-    if (_remote_on) stopRemoteScreen();   // WiFi dropped: shut the web server down
+    if (_remote_on) stopRemoteScreen();
   }
 
   // USB serial -> terminal commands
@@ -856,8 +1326,47 @@ void UITask::loop() {
   // 1 Hz tick for clocks etc
   if (millis() - _last_tick > 1000) {
     _last_tick = millis();
+    // Stuck login pending: free UI so ENTER on password can work again
+    if (_login_pending_valid && _login_pending_ms &&
+        (int32_t)(millis() - _login_pending_ms) > (int32_t)LOGIN_PENDING_TIMEOUT_MS) {
+      clearLoginPending("timeout (no response)");
+      toast("Login timed out - try again", C_YELLOW);
+      RepeatersScreen* rs = (RepeatersScreen*)_screens[SCR_REPEATERS];
+      if (rs) rs->onLoginFinished("sys", false);
+      // Retry auto-login chain after a short pause
+      _auto_login_at = millis() + 1500;
+    }
+    // End room sync windows that finished quietly / hit max; refresh countdown UI
+    for (int i = 0; i < ROOM_SYNC_SLOTS; i++) {
+      if (!_room_sync[i].active) continue;
+      if (roomSyncRemainingMs(_room_sync[i].prefix) == 0)
+        endRoomSync(_room_sync[i].prefix, "quiet/timeout");
+      else
+        _dirty = true;  // countdown chip / compose hint
+    }
+    if (_auto_login_at && (int32_t)(millis() - _auto_login_at) >= 0) {
+      _auto_login_at = 0;
+      tryAutoLoginRooms();
+    }
     _screens[_cur]->tick1s();
+#ifdef MESHDECK_BETA
+    // Ring timeout / Codec2 finish while user is on another screen (incoming)
+    if (_cur != SCR_VOICE) {
+      VoiceScreen* vs = static_cast<VoiceScreen*>(_screens[SCR_VOICE]);
+      if (vs && (vs->hasIncomingCall() || vs->isInCall()))
+        vs->tick1s();
+    }
+#endif
     if ((_cur == SCR_HOME || _cur == SCR_DIAG) && hw.isDisplayOn()) _dirty = true;
+#ifdef MESHDECK_BETA
+    {
+      VoiceScreen* vs_in = static_cast<VoiceScreen*>(_screens[SCR_VOICE]);
+      if (vs_in && vs_in->hasIncomingCall()) {
+        _dirty = true;
+        hw.kickActivity();  // don't sleep while ringing
+      }
+    }
+#endif
     checkDim();
   }
 
@@ -877,7 +1386,6 @@ void UITask::loop() {
     drawAll();
   }
 }
-
 void UITask::checkDim() {
   if (set.timeout_s == 0 || set.always_on) return;
   uint32_t idle = millis() - hw.lastActivityMillis();
@@ -940,6 +1448,48 @@ void UITask::dispatchInput() {
   Screen* s = _screens[_cur];
   bool used = false;
 
+#ifdef MESHDECK_BETA
+  // Incoming voice call: Accept/Decline captures all input above the screen
+  VoiceScreen* vs_ring = static_cast<VoiceScreen*>(_screens[SCR_VOICE]);
+  if (vs_ring && vs_ring->hasIncomingCall()) {
+    if (k) {
+      if (k == 0x0D || k == ' ') {
+        vs_ring->acceptInbound();
+        go(SCR_VOICE);
+      } else if (k == 'n' || k == 'N' || k == 0x1B) {
+        vs_ring->rejectInbound(true);
+      }
+      // swallow everything else while ringing
+      used = true;
+      _dirty = true;
+    }
+    if (nv != NAV_NONE) {
+      if (nv == NAV_SELECT) {
+        vs_ring->acceptInbound();
+        go(SCR_VOICE);
+      } else if (nv == NAV_BACK) {
+        vs_ring->rejectInbound(true);
+      }
+      used = true;
+      _dirty = true;
+    }
+    if (has_touch) {
+      // Tap left half = decline, right half = accept
+      if (te.kind == TouchEvent::TAP) {
+        if (te.x < SCREEN_W / 2)
+          vs_ring->rejectInbound(true);
+        else {
+          vs_ring->acceptInbound();
+          go(SCR_VOICE);
+        }
+      }
+      used = true;
+      _dirty = true;
+    }
+    return;
+  }
+#endif
+
   if (k) {
     used = s->key(k);
     if (!used) {
@@ -991,6 +1541,14 @@ void UITask::drawAll() {
     ellipsize(t, (w - 16) / 6 + 1 > 51 ? 51 : (w - 16) / 6 + 1, _toast);
     c.print(t);
   }
+
+#ifdef MESHDECK_BETA
+  // Incoming call modal sits above the current screen (and toast)
+  VoiceScreen* vs = static_cast<VoiceScreen*>(_screens[SCR_VOICE]);
+  if (vs && vs->hasIncomingCall() && _cur != SCR_VOICE) {
+    vs->drawIncomingOverlay(cv());
+  }
+#endif
 
   hw.push();
 }
@@ -1064,6 +1622,473 @@ void UITask::sendSOSNow() {
   }
   sendChannel(0, msg);   // public channel
   termLog(C_TERM_TX, "%s", msg);
+}
+
+// ---------------------------------------------------------------- Room / repeater credentials
+
+void UITask::loadRoomCreds() {
+  _room_cred_n = 0;
+  memset(_room_session_ok, 0, sizeof(_room_session_ok));
+  memset(_room_auto_tries, 0, sizeof(_room_auto_tries));
+  _auto_login_wait_rounds = 0;
+  File f = SPIFFS.open(ROOM_CRED_FILE, "r");
+  if (!f) return;
+  uint32_t magic = 0;
+  int n = 0;
+  if (f.read((uint8_t*)&magic, 4) != 4 || magic != ROOM_CRED_MAGIC) { f.close(); return; }
+  if (f.read((uint8_t*)&n, 4) != 4 || n < 0 || n > ROOM_CRED_MAX) { f.close(); return; }
+  for (int i = 0; i < n; i++) {
+    if (f.read((uint8_t*)&_room_creds[i], sizeof(RoomCred)) != sizeof(RoomCred)) break;
+    _room_creds[i].password[sizeof(_room_creds[i].password) - 1] = 0;
+    _room_creds[i].name[sizeof(_room_creds[i].name) - 1] = 0;
+    _room_cred_n++;
+  }
+  f.close();
+  termLog(C_TERM_SYS, "room logins: %d saved", _room_cred_n);
+}
+
+int UITask::roomCredIndex(const uint8_t* prefix6) const {
+  if (!prefix6) return -1;
+  for (int i = 0; i < _room_cred_n; i++)
+    if (memcmp(_room_creds[i].pub_prefix, prefix6, 6) == 0) return i;
+  return -1;
+}
+
+void UITask::markRoomSessionOk(const uint8_t* prefix6) {
+  int i = roomCredIndex(prefix6);
+  if (i >= 0) _room_session_ok[i] = 1;
+}
+
+bool UITask::roomSessionOk(const uint8_t* prefix6) const {
+  int i = roomCredIndex(prefix6);
+  return i >= 0 && _room_session_ok[i] != 0;
+}
+
+uint8_t UITask::autoLoginMaxTries() const {
+  uint8_t n = set.room_login_tries;
+  if (n < 1) n = AUTO_LOGIN_TRIES_DEFAULT;
+  if (n > AUTO_LOGIN_TRIES_MAX) n = AUTO_LOGIN_TRIES_MAX;
+  return n;
+}
+
+bool UITask::roomNeedsAutoLogin(int idx) const {
+  if (idx < 0 || idx >= _room_cred_n) return false;
+  const RoomCred& e = _room_creds[idx];
+  // auto_login alone is enough — blank passwords are valid for some rooms
+  if (!e.auto_login) return false;
+  if (_room_session_ok[idx]) return false;
+  if (_room_auto_tries[idx] >= autoLoginMaxTries()) return false;
+  if (!mesh) return false;
+  ContactInfo* live = mesh->lookupContactByPubKey(e.pub_prefix, 6);
+  // Contact not in book yet — still "needs" auto-login when it appears
+  if (!live) return true;
+  if (mesh->isLoggedInto(live->id.pub_key)) return false;
+  return true;
+}
+
+void UITask::clearLoginPending(const char* why) {
+  if (!_login_pending_valid) return;
+  _login_pending_valid = false;
+  _login_pending_ms = 0;
+  _login_pending_pwd[0] = 0;
+  if (why) termLog(C_TERM_SYS, "login pending cleared: %s", why);
+}
+
+int UITask::roomSyncIndex(const uint8_t* prefix6) const {
+  if (!prefix6) return -1;
+  for (int i = 0; i < ROOM_SYNC_SLOTS; i++) {
+    if (_room_sync[i].active &&
+        memcmp(_room_sync[i].prefix, prefix6, 6) == 0)
+      return i;
+  }
+  return -1;
+}
+
+void UITask::beginRoomSync(const uint8_t* prefix6) {
+  if (!prefix6) return;
+  int idx = roomSyncIndex(prefix6);
+  if (idx < 0) {
+    // Free slot or replace oldest
+    idx = 0;
+    uint32_t oldest = UINT32_MAX;
+    for (int i = 0; i < ROOM_SYNC_SLOTS; i++) {
+      if (!_room_sync[i].active) { idx = i; break; }
+      if (_room_sync[i].login_ms < oldest) {
+        oldest = _room_sync[i].login_ms;
+        idx = i;
+      }
+    }
+  }
+  memcpy(_room_sync[idx].prefix, prefix6, 6);
+  _room_sync[idx].login_ms = millis();
+  _room_sync[idx].last_rx_ms = millis();  // require quiet after login too
+  _room_sync[idx].active = true;
+  termLog(C_TERM_SYS, "room sync started (backlog) — wait before posting");
+  toast("Syncing room backlog...", C_CYAN);
+  _dirty = true;
+}
+
+void UITask::noteRoomSyncRx(const uint8_t* prefix6) {
+  int idx = roomSyncIndex(prefix6);
+  if (idx < 0) return;  // not in a sync window for this room
+  _room_sync[idx].last_rx_ms = millis();
+  _dirty = true;
+}
+
+void UITask::endRoomSync(const uint8_t* prefix6, const char* why) {
+  int idx = roomSyncIndex(prefix6);
+  if (idx < 0) return;
+  _room_sync[idx].active = false;
+  termLog(C_TERM_SYS, "room sync done%s%s",
+          why ? ": " : "", why ? why : "");
+  toast("Room ready — you can post", C_GREEN);
+  _dirty = true;
+}
+
+uint32_t UITask::roomSyncRemainingMs(const uint8_t* prefix6) const {
+  int idx = roomSyncIndex(prefix6);
+  if (idx < 0) return 0;
+  const RoomSync& s = _room_sync[idx];
+  if (!s.active) return 0;
+  uint32_t now = millis();
+  uint32_t since_login = now - s.login_ms;
+  uint32_t since_rx    = now - s.last_rx_ms;
+
+  // Hard cap always wins
+  if (since_login >= ROOM_SYNC_MAX_MS) return 0;
+
+  uint32_t need = 0;
+  if (since_login < ROOM_SYNC_MIN_MS)
+    need = ROOM_SYNC_MIN_MS - since_login;
+  if (since_rx < ROOM_SYNC_QUIET_MS) {
+    uint32_t q = ROOM_SYNC_QUIET_MS - since_rx;
+    if (q > need) need = q;
+  }
+  // Don't exceed max
+  if (since_login + need > ROOM_SYNC_MAX_MS)
+    need = ROOM_SYNC_MAX_MS - since_login;
+  return need;
+}
+
+bool UITask::isRoomSyncing(const uint8_t* prefix6) const {
+  return roomSyncRemainingMs(prefix6) > 0;
+}
+
+bool UITask::allowSendToContact(const ContactInfo& c, bool toast_if_blocked) {
+  // Only gate room servers (backlog push is room-specific)
+  if (c.type != ADV_TYPE_ROOM) return true;
+  uint32_t rem = roomSyncRemainingMs(c.id.pub_key);
+  if (rem == 0) return true;
+  if (toast_if_blocked) {
+    char msg[48];
+    snprintf(msg, sizeof(msg), "Syncing room... %us",
+             (unsigned)((rem + 999) / 1000));
+    toast(msg, C_YELLOW);
+  }
+  return false;
+}
+
+bool UITask::resyncRoom(const ContactInfo& c, bool full_history) {
+  if (!mesh) return false;
+  ContactInfo* live = mesh->lookupContactByPubKey(c.id.pub_key, 6);
+  if (!live) {
+    toast("Room not in contacts", C_RED);
+    return false;
+  }
+  if (live->type != ADV_TYPE_ROOM) {
+    toast("Not a room server", C_YELLOW);
+    return false;
+  }
+
+  if (full_history) {
+    mesh->resetRoomSyncSince(*live);
+    termLog(C_TERM_SYS, "resync %s: full backlog requested", live->name);
+  } else {
+    termLog(C_TERM_SYS, "resync %s: re-login (keep sync_since)", live->name);
+  }
+
+  // Clear session flags so UI doesn't think we're done
+  int idx = roomCredIndex(live->id.pub_key);
+  if (idx >= 0) {
+    _room_session_ok[idx] = 0;
+    // Give resync its own auto-try budget
+    _room_auto_tries[idx] = 0;
+  }
+  // Drop any in-progress sync window; fresh one starts on login OK
+  int si = roomSyncIndex(live->id.pub_key);
+  if (si >= 0) _room_sync[si].active = false;
+
+  clearLoginPending("resync");
+
+  const RoomCred* e = findRoomCred(live->id.pub_key);
+  const char* pwd = e ? e->password : "";
+  bool auto_on = e ? (e->auto_login != 0) : true;
+
+  if (!beginRoomLogin(*live, pwd, auto_on, true /* force */)) {
+    toast("Resync login failed", C_RED);
+    return false;
+  }
+  toast(full_history ? "Resyncing full backlog..." : "Reconnecting to room...",
+        C_CYAN);
+  return true;
+}
+
+void UITask::saveRoomCreds() {
+  File f = SPIFFS.open(ROOM_CRED_FILE, "w");
+  if (!f) return;
+  uint32_t magic = ROOM_CRED_MAGIC;
+  f.write((uint8_t*)&magic, 4);
+  f.write((uint8_t*)&_room_cred_n, 4);
+  for (int i = 0; i < _room_cred_n; i++)
+    f.write((uint8_t*)&_room_creds[i], sizeof(RoomCred));
+  f.close();
+}
+
+const UITask::RoomCred* UITask::findRoomCred(const uint8_t* prefix6) const {
+  if (!prefix6) return nullptr;
+  for (int i = 0; i < _room_cred_n; i++)
+    if (memcmp(_room_creds[i].pub_prefix, prefix6, 6) == 0)
+      return &_room_creds[i];
+  return nullptr;
+}
+
+UITask::RoomCred* UITask::findRoomCredMut(const uint8_t* prefix6) {
+  return const_cast<RoomCred*>(findRoomCred(prefix6));
+}
+
+void UITask::saveRoomCred(const ContactInfo& c, const char* password, bool auto_login) {
+  if (!password) return;
+  int idx = roomCredIndex(c.id.pub_key);
+  RoomCred* e = nullptr;
+  if (idx < 0) {
+    if (_room_cred_n >= ROOM_CRED_MAX) {
+      memmove(&_room_creds[0], &_room_creds[1],
+              sizeof(RoomCred) * (ROOM_CRED_MAX - 1));
+      memmove(&_room_session_ok[0], &_room_session_ok[1],
+              sizeof(_room_session_ok) - 1);
+      memmove(&_room_auto_tries[0], &_room_auto_tries[1],
+              sizeof(_room_auto_tries) - 1);
+      _room_cred_n = ROOM_CRED_MAX - 1;
+    }
+    idx = _room_cred_n++;
+    e = &_room_creds[idx];
+    memset(e, 0, sizeof(*e));
+    memcpy(e->pub_prefix, c.id.pub_key, 6);
+    _room_session_ok[idx] = 0;
+    _room_auto_tries[idx] = 0;
+  } else {
+    e = &_room_creds[idx];
+  }
+  StrHelper::strncpy(e->password, password, sizeof(e->password));
+  e->auto_login = auto_login ? 1 : 0;
+  e->type = c.type;
+  StrHelper::strncpy(e->name, c.name, sizeof(e->name));
+  saveRoomCreds();
+  termLog(C_TERM_SYS, "saved login for %s (auto=%d)", e->name, e->auto_login ? 1 : 0);
+}
+
+void UITask::forgetRoomCred(const uint8_t* prefix6) {
+  for (int i = 0; i < _room_cred_n; i++) {
+    if (memcmp(_room_creds[i].pub_prefix, prefix6, 6) == 0) {
+      memmove(&_room_creds[i], &_room_creds[i + 1],
+              sizeof(RoomCred) * (_room_cred_n - i - 1));
+      memmove(&_room_session_ok[i], &_room_session_ok[i + 1],
+              (size_t)(_room_cred_n - i - 1));
+      memmove(&_room_auto_tries[i], &_room_auto_tries[i + 1],
+              (size_t)(_room_cred_n - i - 1));
+      _room_cred_n--;
+      saveRoomCreds();
+      return;
+    }
+  }
+}
+
+bool UITask::setRoomAutoLogin(const uint8_t* prefix6, bool on) {
+  RoomCred* e = findRoomCredMut(prefix6);
+  if (!e) return false;
+  e->auto_login = on ? 1 : 0;
+  saveRoomCreds();
+  return true;
+}
+
+bool UITask::beginRoomLogin(const ContactInfo& c, const char* password,
+                            bool auto_login_if_ok, bool force) {
+  if (!mesh || !password) return false;
+
+  // Already keep-alive connected — treat as success so UI leaves password screen
+  // (unless force=true for resync)
+  if (!force && mesh->isLoggedInto(c.id.pub_key)) {
+    markRoomSessionOk(c.id.pub_key);
+    termLog(C_TERM_SYS, "login skip %s (already connected)", c.name);
+    toast("Already logged in", C_GREEN);
+    return true;
+  }
+  if (force && mesh->isLoggedInto(c.id.pub_key)) {
+    mesh->endServerSession(c.id.pub_key);
+  }
+
+  // Expire stuck "in flight" state (no RESPONSE / never matched) so retries work
+  if (_login_pending_valid && _login_pending_ms &&
+      (int32_t)(millis() - _login_pending_ms) > (int32_t)LOGIN_PENDING_TIMEOUT_MS) {
+    clearLoginPending("timeout");
+  }
+
+  if (_login_pending_valid) {
+    // Same room: allow re-send (previous attempt may have been lost on air)
+    if (memcmp(_login_pending_prefix, c.id.pub_key, 6) == 0) {
+      clearLoginPending("retry same room");
+    } else {
+      termLog(C_TERM_SYS, "login skip %s (another login in flight)", c.name);
+      toast("Login already in progress", C_YELLOW);
+      return false;
+    }
+  }
+
+  // Stale session_ok without mesh connection: allow re-login (force clear flag)
+  {
+    int idx = roomCredIndex(c.id.pub_key);
+    if (idx >= 0) _room_session_ok[idx] = 0;
+  }
+
+  memcpy(_login_pending_prefix, c.id.pub_key, 6);
+  StrHelper::strncpy(_login_pending_pwd, password, sizeof(_login_pending_pwd));
+  _login_pending_auto = auto_login_if_ok;
+  _login_pending_valid = true;
+  _login_pending_ms = millis();
+  uint32_t est = 0;
+  int res = mesh->loginWithPassword(c, password, est);
+  if (res == MSG_SEND_FAILED) {
+    clearLoginPending("send failed");
+    toast("Login send failed", C_RED);
+    return false;
+  }
+  char msg[48];
+  snprintf(msg, sizeof(msg), "Logging in to %s...", c.name);
+  toast(msg, C_CYAN);
+  termLog(C_TERM_TX, "[login->%s] pwd_len=%u", c.name, (unsigned)strlen(password));
+  repLog(">", "login sent...");
+  return true;
+}
+
+void UITask::tryAutoLoginRooms() {
+  if (!mesh || _room_cred_n == 0) return;
+
+  // Don't block forever if a previous attempt never completed
+  // (try already counted when the TX was started)
+  if (_login_pending_valid && _login_pending_ms &&
+      (int32_t)(millis() - _login_pending_ms) > (int32_t)LOGIN_PENDING_TIMEOUT_MS) {
+    clearLoginPending("auto-login timeout");
+  }
+  if (_login_pending_valid) return;  // wait for current attempt
+
+  // One room at a time (MeshCore has a single pending_login)
+  bool waiting_for_contact = false;
+  for (int i = 0; i < _room_cred_n; i++) {
+    if (!roomNeedsAutoLogin(i)) continue;
+    ContactInfo* live = mesh->lookupContactByPubKey(_room_creds[i].pub_prefix, 6);
+    if (!live) {
+      waiting_for_contact = true;
+      continue;
+    }
+    const uint8_t max_tries = autoLoginMaxTries();
+    // Count this TX attempt before send
+    if (_room_auto_tries[i] >= max_tries) continue;
+    _room_auto_tries[i]++;
+    termLog(C_TERM_TX, "auto-login try %u/%u -> %s",
+            (unsigned)_room_auto_tries[i], (unsigned)max_tries,
+            _room_creds[i].name[0] ? _room_creds[i].name : live->name);
+    if (beginRoomLogin(*live, _room_creds[i].password, true)) {
+      // If already connected, beginRoomLogin returns true without pending —
+      // don't leave a dead retry schedule for this room
+      if (mesh->isLoggedInto(live->id.pub_key)) {
+        _room_session_ok[i] = 1;
+      }
+    } else {
+      // Send failed / busy — leave try counted; schedule another room later
+      _auto_login_at = millis() + 2500;
+    }
+    return;
+  }
+  // Contact not in book yet: retry a few times then stop (not forever)
+  if (waiting_for_contact) {
+    const uint8_t max_tries = autoLoginMaxTries();
+    if (_auto_login_wait_rounds < max_tries) {
+      _auto_login_wait_rounds++;
+      termLog(C_TERM_SYS, "auto-login: waiting for room contact (%u/%u)",
+              (unsigned)_auto_login_wait_rounds, (unsigned)max_tries);
+      _auto_login_at = millis() + 5000;
+    } else {
+      termLog(C_TERM_SYS, "auto-login: gave up waiting for room contacts");
+      _auto_login_at = 0;
+    }
+    return;
+  }
+  _auto_login_at = 0;
+}
+
+void UITask::onLoginResult(const ContactInfo& from, bool ok) {
+  termLog(ok ? C_TERM_RX : C_TERM_ERR, "[%s] login %s", from.name, ok ? "OK" : "FAIL");
+  // Clear "waiting for reply..." with a definitive console line
+  repLog(from.name, ok ? "LOGIN OK - session active" : "LOGIN FAILED");
+
+  bool match = _login_pending_valid &&
+               memcmp(_login_pending_prefix, from.id.pub_key, 6) == 0;
+  // Also accept 4-byte prefix match (mesh pending_login is only 4 bytes)
+  if (!match && _login_pending_valid &&
+      memcmp(_login_pending_prefix, from.id.pub_key, 4) == 0)
+    match = true;
+
+  if (ok) {
+    // Always persist credentials on successful pending login (blank pwd OK)
+    if (match) {
+      saveRoomCred(from, _login_pending_pwd, _login_pending_auto);
+    }
+    markRoomSessionOk(from.id.pub_key);
+    // If no cred slot yet (history path without pending), still try mark
+    if (!findRoomCred(from.id.pub_key) && match) {
+      saveRoomCred(from, _login_pending_pwd, _login_pending_auto);
+      markRoomSessionOk(from.id.pub_key);
+    }
+    char msg[48];
+    snprintf(msg, sizeof(msg), "Logged in: %s", from.name);
+    toast(msg, C_GREEN);
+    // Room servers push backlog stop-and-wait — block TX until quiet
+    if (from.type == ADV_TYPE_ROOM)
+      beginRoomSync(from.id.pub_key);
+  } else {
+    toast("Login failed", C_RED);
+  }
+
+  // Always release UI pending on match so password screen can retry
+  if (match) clearLoginPending(ok ? "ok" : "fail");
+
+  // Notify repeaters console if open
+  {
+    RepeatersScreen* rs = (RepeatersScreen*)_screens[SCR_REPEATERS];
+    if (rs) rs->onLoginFinished(from.name, ok);
+  }
+
+  // Schedule next auto-login only if some room still has tries left
+  bool more = false;
+  for (int i = 0; i < _room_cred_n; i++) {
+    if (roomNeedsAutoLogin(i)) { more = true; break; }
+  }
+  if (more) {
+    _auto_login_at = millis() + 2500;
+  } else {
+    _auto_login_at = 0;
+    // Log if any room exhausted tries without session
+    const uint8_t max_tries = autoLoginMaxTries();
+    for (int i = 0; i < _room_cred_n; i++) {
+      if (_room_creds[i].auto_login && !_room_session_ok[i] &&
+          _room_auto_tries[i] >= max_tries) {
+        termLog(C_TERM_SYS, "auto-login stopped for %s after %u tries",
+                _room_creds[i].name[0] ? _room_creds[i].name : "?",
+                (unsigned)max_tries);
+      }
+    }
+  }
+  _dirty = true;
 }
 
 // ---------------------------------------------------------------- WiFi
@@ -1203,26 +2228,6 @@ void OnboardScreen::enter() {
   _nlen = strlen(_name);
   _sel = 0; _top = 0;
 }
-
-void OnboardScreen::choose(int i) {
-  // save the node name entered in phase 0
-  if (_nlen > 0 && ui.prefs && ui.mesh) {
-    _name[_nlen] = 0;
-    StrHelper::strncpy(ui.prefs->node_name, _name, sizeof(ui.prefs->node_name));
-    ui.mesh->savePrefs();
-  }
-  if (i >= 0 && i < N_PRESETS) {
-    const RadioPreset& p = PRESETS[i];
-    ui.applyPreset(p.freq, p.bw, p.sf, p.cr);
-    char buf[44];
-    snprintf(buf, sizeof(buf), "%s selected", p.name);
-    ui.toast(buf, C_GREEN);
-  } else {
-    ui.toast("Keeping current radio settings", C_YELLOW);
-  }
-  ui.finishOnboarding();
-}
-
 void OnboardScreen::draw() {
   GFXcanvas16& c = ui.cv();
   c.fillScreen(C_BG);
@@ -1286,6 +2291,26 @@ void OnboardScreen::draw() {
     c.fillRect(SCREEN_W - 3, bar_y, 2, bar_h, C_FG_FAINT);
   }
 }
+
+void OnboardScreen::choose(int i) {
+  // save the node name entered in phase 0
+  if (_nlen > 0 && ui.prefs && ui.mesh) {
+    _name[_nlen] = 0;
+    StrHelper::strncpy(ui.prefs->node_name, _name, sizeof(ui.prefs->node_name));
+    ui.mesh->savePrefs();
+  }
+  if (i >= 0 && i < N_PRESETS) {
+    const RadioPreset& p = PRESETS[i];
+    ui.applyPreset(p.freq, p.bw, p.sf, p.cr);
+    char buf[44];
+    snprintf(buf, sizeof(buf), "%s selected", p.name);
+    ui.toast(buf, C_GREEN);
+  } else {
+    ui.toast("Keeping current radio settings", C_YELLOW);
+  }
+  ui.finishOnboarding();
+}
+
 
 bool OnboardScreen::key(uint8_t k) {
   if (_phase == 0) {

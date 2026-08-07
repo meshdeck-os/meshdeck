@@ -22,7 +22,7 @@ MAGIC = 0x314D444D   # "MDM1"
 
 
 def load_lines(path):
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         gj = json.load(f)
     lines = []
     for feat in gj["features"]:
@@ -87,7 +87,7 @@ def main():
             pts.append((int(round(lat * scale)), int(round(lon * scale))))
         idx.append((start, len(s)))
 
-    with open(f"{repo}/50m/cultural/ne_50m_populated_places_simple.json") as f:
+    with open(f"{repo}/50m/cultural/ne_50m_populated_places_simple.json", encoding="utf-8") as f:
         places = json.load(f)["features"]
     cities = []
     for p in places:

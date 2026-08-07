@@ -48,6 +48,8 @@ private:
 
 // ---------------------------------------------------------------- Contacts
 
+// ---------------------------------------------------------------- Contacts
+
 class ContactsScreen : public Screen {
 public:
   ContactsScreen(UITask& u) : Screen(u) {}
@@ -58,11 +60,21 @@ public:
   bool touch(const TouchEvent& e) override;
 private:
   void action(int which);
+  void rebuildFilter();
+  int  filteredCount() const { return _fn; }
+  int  realIndex(int filtered_i) const;   // filtered row -> contact idx
+
   int _sel = 0;
   int _top = 0;
-  int _menu = -1;            // -1 none, else selected action row
-};
+  int _menu = -1;
 
+  char _filter[20] = {0};   // MUST be zeroed — garbage here looks like a filter
+  int  _flen = 0;
+  // Index map: filtered row -> real contact index (size for MAX_CONTACTS)
+  static constexpr int FMAP_MAX = 350;
+  int  _fmap[FMAP_MAX];
+  int  _fn = 0;
+};
 // ---------------------------------------------------------------- Map
 
 class MapScreen : public Screen {
@@ -83,16 +95,22 @@ private:
 
 // ---------------------------------------------------------------- Last heard
 
+// ---------------------------------------------------------------- Last heard
+
 class LastHeardScreen : public Screen {
 public:
   LastHeardScreen(UITask& u) : Screen(u) {}
+  void enter() override { _top = 0; _sel = 0; }
   void draw() override;
   bool nav(NavEvent e) override;
+  bool key(uint8_t k) override;
+  bool touch(const TouchEvent& e) override;
 private:
+  void addSelected();
   int _top = 0;
+  int _sel = 0;
 };
-
-// ---------------------------------------------------------------- Repeaters
+// ---------------------------------------------------------------- Repeaters / rooms
 
 class RepeatersScreen : public Screen {
 public:
@@ -102,10 +120,18 @@ public:
   bool key(uint8_t c) override;
   bool nav(NavEvent e) override;
   void onCliResponse(const char* from, const char* text);
+  void onLoginFinished(const char* name, bool ok);
 private:
+  enum Mode : uint8_t { MODE_LIST = 0, MODE_LOGIN, MODE_CONSOLE };
   void rebuild();
   void sendLine();
+  void openLogin();
+  void submitLogin();
+  void openConsole();
+  void toggleAuto();
+  void resyncSelected(bool full_history);
   ContactInfo* selContact();
+  void replaceWaitingLine(const char* from, const char* text);
 
   uint8_t _prefixes[24][6];
   char _names[24][28];
@@ -113,10 +139,12 @@ private:
   uint32_t _last_adv[24];
   int _n = 0;
   int _sel = 0, _top = 0;
-  bool _console = false;      // list vs console mode
+  Mode _mode = MODE_LIST;
   char _line[80];
   int _llen = 0;
-  bool _pwd_mode = false;
+  bool _login_auto = true;   // remember + auto-login after success
+  bool _show_pwd = false;     // reveal password while typing
+  bool _awaiting_login = false;
   struct CLine { char from[12]; char text[70]; };
   CLine _clines[14];
   int _cn = 0;
@@ -179,10 +207,21 @@ private:
   void adjust(int dir);
   void select();
   void applyEdit();
-  int _sel = 0, _top = 0;
+  void rebuildFilter();
+  int  realItem() const;     // filtered row -> SI_* index
+  int  filteredCount() const { return _fn; }
+
+  int _sel = 0, _top = 0;    // selection is in filtered list space
   bool _editing = false;
-  char _edit[68];          // large enough for a WiFi WPA password
+  char _edit[68];            // large enough for a WiFi WPA password
   int _elen = 0;
+
+  // Type-to-filter (same idea as Contacts)
+  char _filter[20] = {0};
+  int  _flen = 0;
+  static constexpr int FMAP_MAX = 48;  // SI_COUNT fits with headroom
+  int  _fmap[FMAP_MAX];
+  int  _fn = 0;
 };
 
 // ---------------------------------------------------------------- QR viewer
@@ -306,23 +345,54 @@ private:
   int  _elen = 0;
 };
 
-// ---------------------------------------------------------------- Voice test (beta)
+// ---------------------------------------------------------------- Voice call (beta, Contacts → Call...)
 
 class VoiceScreen : public Screen {
 public:
   VoiceScreen(UITask& u) : Screen(u) {}
+
+  // Screen lifecycle
   void enter() override;
+  void leave() override;
   void draw() override;
   bool key(uint8_t c) override;
   bool nav(NavEvent e) override;
+  void tick1s() override;
+
+  // Call entry / global ring UI (Contacts + UITask)
+  void prepareOutbound(const ContactInfo& to);
+  bool beginOutboundInvite();
+  void acceptInbound();
+  void rejectInbound(bool send_dm);
+  bool hasIncomingCall() const;
+  bool isInCall() const;          // OUTGOING / INCOMING / CONNECTED
+  void drawIncomingOverlay(GFXcanvas16& c);
+
+  // Mesh / media hooks (UITask → VoiceScreen)
+  void pushRxVoice(const uint8_t* data, size_t len, bool eos,
+                   const char* from_name, float snr,
+                   const ContactInfo* from = nullptr);
+  void onPacketSent(uint32_t tag, uint16_t len, bool eos);
+  void onPacketAcked(uint32_t tag, bool eos);
+  void checkVoiceAcks();
+#ifdef MESHDECK_BETA
+  void pollPTT();          // TX: drain encode worker → mesh
+  void pollRxPlayback();   // ensure c2dec alive while listening (decode not on loop)
+  void onTargetAdvert(const ContactInfo& contact);
+
+  // Call control plane (INVITE / ACCEPT / DECLINE / END / BUSY)
+  bool sendVoiceControl(UITask& ui, const ContactInfo& to, uint8_t ctrl);
+  void endCall(UITask& ui, bool send_end);
+  void handleCallControl(UITask& ui, uint8_t ctrl, const char* from_name, float snr,
+                         const ContactInfo* from = nullptr);
+#endif
+
 private:
-  void record();
-  void playback();
-  int16_t* _buf = nullptr;     // PSRAM capture buffer (16 kHz mono, 16-bit)
-  int      _cap = 0;           // capacity in samples
-  int      _len = 0;           // samples captured
-  int      _peak = 0;          // last-capture peak amplitude
-  int      _rms = 0;           // last-capture RMS
-  bool     _hwok = false;      // ES7210 chip-id read back OK
-  char     _status[40] = "hold ENTER to record 2s";
+  bool startCodec2Init(const char* status_while);
+  void onConnectedMedia();
+
+  bool _hwok = false;
+  bool _auto_invite = false;
+  char _status[48] = "Call from Contacts";
 };
+

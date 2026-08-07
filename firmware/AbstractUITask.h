@@ -34,6 +34,15 @@ protected:
   }
 
 public:
+  virtual void onVoicePacketSent(uint32_t tag, uint16_t len, bool eos) {}
+  virtual void onVoicePacketAcked(uint32_t tag, bool eos) {}
+
+  virtual void onVoiceRecv(const mesh::GroupChannel& channel,
+                         const uint8_t* voice_data, size_t len,
+                         bool end_of_stream, float snr) {}
+  virtual void onVoiceRecvFromContact(const ContactInfo& from,
+                                    const uint8_t* voice_data, size_t len,
+                                    bool end_of_stream, float snr) {}
   void setHasConnection(bool connected) { _connected = connected; }
   bool hasConnection() const { return _connected; }
   uint16_t getBattMilliVolts() const { return _board->getBattMilliVolts(); }
@@ -49,9 +58,12 @@ public:
 
   // direct message (txt_type TXT_TYPE_PLAIN / _SIGNED_PLAIN) from a known contact
   virtual void onContactMsg(const ContactInfo& from, const char* text, uint32_t sender_ts,
-                            uint8_t path_len, float snr) {}
+                          uint8_t path_len, float snr,
+                          const uint8_t* sender_prefix = nullptr) {}
   // CLI response data from a repeater/room we are logged into
   virtual void onCliResponse(const ContactInfo& from, const char* text) {}
+  // Room/repeater login result (ANON_REQ login response)
+  virtual void onLoginResult(const ContactInfo& from, bool ok) {}
   // group channel message; text is "SenderName: message" per MeshCore convention
   virtual void onChannelMsg(uint8_t channel_idx, const char* channel_name, const char* text,
                             uint32_t ts, uint8_t path_len, float snr) {}

@@ -1,6 +1,7 @@
 #include "AllScreens.h"
 #include "../MyMesh.h"
 #include <helpers/TxtDataHelpers.h>
+#include <helpers/AdvertDataHelpers.h>
 
 #define TAB_H      16
 #define INPUT_H    22
@@ -35,7 +36,10 @@ void ChatScreen::enter() {
   if (_tab >= _norder) _tab = 0;
   _scroll = 0;
   DeckThread* t = cur();
-  if (t) ui.store.markRead(t);
+  if (t) {
+    ui.store.markRead(t);
+    ui.reresolveThreadSenders(t);   // <-- add this
+  }
 }
 
 DeckThread* ChatScreen::cur() {
@@ -56,122 +60,169 @@ void ChatScreen::draw() {
   c.fillScreen(C_BG);
   ui.drawStatusBar("Chat");
 
-  // refresh ordering (new threads can appear at any time)
+  // Keep the current tab stable while threads are re-ordered
   int prev_thread = _norder ? _order[_tab] : -1;
   ui.store.sortByRecent(_order);
   _norder = ui.store.numThreads();
   if (prev_thread >= 0) {
-    for (int i = 0; i < _norder; i++) if (_order[i] == prev_thread) { _tab = i; break; }
+    for (int i = 0; i < _norder; i++) {
+      if (_order[i] == prev_thread) { _tab = i; break; }
+    }
   }
   if (_tab >= _norder) _tab = 0;
-
-  // ---- tab bar ----
-  c.fillRect(0, STATUS_H + 1, SCREEN_W, TAB_H, C_BG);
-  int tx = 4;
-  c.setTextSize(1);
-  for (int i = 0; i < _norder && tx < SCREEN_W - 20; i++) {
-    DeckThread* t = ui.store.thread(_order[i]);
-    char label[20];
-    char nm[16];
-    ellipsize(nm, sizeof(nm), t->title);
-    snprintf(label, sizeof(label), "%s%s", t->kind == TK_CHANNEL ? "#" : "", nm);
-    int w = strlen(label) * 6 + 12;
-    bool selt = i == _tab;
-    if (selt) {
-      c.fillRoundRect(tx, STATUS_H + 2, w, TAB_H - 3, 4, C_ACCENT_DK);
-      c.drawRoundRect(tx, STATUS_H + 2, w, TAB_H - 3, 4, C_ACCENT);
-    }
-    c.setTextColor(selt ? C_FG : C_FG_DIM);
-    c.setCursor(tx + 6, STATUS_H + 5);
-    c.print(label);
-    if (t->unread > 0 && !selt) {
-      c.fillCircle(tx + w - 3, STATUS_H + 4, 3, C_RED);
-    }
-    tx += w + 4;
-  }
 
   DeckThread* t = cur();
   _nhits = 0;
 
-  // ---- messages (rendered bottom-up) ----
+  // ---- messages first (bottom-up), constrained to [CHAT_TOP, CHAT_BOT) ----
   if (!t || t->count == 0) {
     c.setTextColor(C_FG_FAINT);
-    c.setCursor(70, 120);
+    c.setCursor(70, (CHAT_TOP + CHAT_BOT) / 2);
     c.print(t ? "No messages yet - say hi!" : "No conversations yet");
   } else {
-    int y = CHAT_BOT - 4 + _scroll;    // bottom edge of newest bubble
-    for (int i = t->count - 1; i >= 0 && y > CHAT_TOP - 60; i--) {
+    int y = CHAT_BOT - 4 + _scroll;
+    bool dbg_once = true;
+
+    for (int i = t->count - 1; i >= 0 && y > CHAT_TOP; i--) {
       DeckMsg* m = ui.store.msgAt(t, i);
       if (!m) continue;
-      bool out = m->flags & MF_OUT;
-      bool show_name = t->kind == TK_CHANNEL && !out;
 
-      int text_h = measureRichTextHeight(c, BUB_MAX_W - 14, m->text, 1);
+      const bool out = (m->flags & MF_OUT) != 0;
+      const bool show_name = !out && m->sender[0];
+
+      // Truncate name early so width math is accurate
+      char namebuf[18];
+      namebuf[0] = 0;
+      if (show_name) {
+        StrHelper::strncpy(namebuf, m->sender, sizeof(namebuf));
+        if (strlen(namebuf) > 14) {
+          namebuf[13] = '.';
+          namebuf[14] = '.';
+          namebuf[15] = 0;
+        }
+      }
+
+      // Name-line meta (hops + SNR) — build before width calc
+      char sig[24];
+      sig[0] = 0;
+      if (show_name) {
+        if (m->hops == 0xFF || m->hops == 0) {
+          strcpy(sig, "direct");
+        } else if (m->hops < 32) {
+          snprintf(sig, sizeof(sig), "%uhop", (unsigned)m->hops);
+        } else {
+          strcpy(sig, "?");
+        }
+        if (m->snr4 != 0) {
+          char s2[12];
+          snprintf(s2, sizeof(s2), " %ddB", (int)m->snr4 / 4);
+          strncat(sig, s2, sizeof(sig) - strlen(sig) - 1);
+        }
+      }
+
+      const int text_h = measureRichTextHeight(c, BUB_MAX_W - 14, m->text, 1);
       int bub_h = text_h + 8 + (show_name ? 10 : 0);
       int bub_w = BUB_MAX_W;
-      // shrink narrow messages
+
+      // Message text width
       int longest = 0, cur_len = 0;
       for (const char* p = m->text; ; p++) {
-        if (*p == '\n' || *p == 0) { if (cur_len > longest) longest = cur_len; cur_len = 0; if (!*p) break; }
-        else cur_len++;
+        if (*p == '\n' || *p == 0) {
+          if (cur_len > longest) longest = cur_len;
+          cur_len = 0;
+          if (!*p) break;
+        } else {
+          cur_len++;
+        }
       }
       int want_w = longest * 6 + 18;
-      int name_w = show_name ? (int)strlen(m->sender) * 6 + 50 : 0;
-      if (want_w < name_w) want_w = name_w;
+
+      // Name row needs: pad + name + gap + sig + pad
+      if (show_name) {
+        int name_row_w = 7 + (int)strlen(namebuf) * 6 + 8 + (int)strlen(sig) * 6 + 7;
+        if (want_w < name_row_w) want_w = name_row_w;
+      }
+
       if (want_w < bub_w) bub_w = want_w;
       if (bub_w < 40) bub_w = 40;
+      if (bub_w > BUB_MAX_W) bub_w = BUB_MAX_W;
 
-      int by = y - bub_h;
-      int bx = out ? SCREEN_W - bub_w - 6 : 6;
+      const int by = y - bub_h;
+
+      // Entirely above the chat window — stop
+      if (by + bub_h <= CHAT_TOP) break;
+
+      // Straddles the top edge — skip so we never paint on the tabs
+      if (by < CHAT_TOP) {
+        y = by - 5;
+        continue;
+      }
+
+      const int bx = out ? (SCREEN_W - bub_w - 6) : 6;
 
       c.fillRoundRect(bx, by, bub_w, bub_h, 7, out ? C_BUB_OUT : C_BUB_IN);
 
-      int ty2 = by + 4;
+      int ty = by + 4;
       if (show_name) {
         c.setTextSize(1);
         c.setTextColor(nameColor(m->sender));
-        c.setCursor(bx + 7, ty2);
-        c.print(m->sender);
-        // signal hint next to name: hops + SNR (when measured)
-        char sig[24];
-        if (m->hops == 0xFF) strcpy(sig, "direct");
-        else snprintf(sig, sizeof(sig), "%dhop", m->hops);
-        if (m->snr4 != 0) {
-          char s2[10];
-          snprintf(s2, sizeof(s2), " %ddB", m->snr4 / 4);
-          strncat(sig, s2, sizeof(sig) - strlen(sig) - 1);
-        }
-        c.setTextColor(C_FG_FAINT);
-        c.setCursor(bx + bub_w - strlen(sig) * 6 - 6, ty2);
-        c.print(sig);
-        ty2 += 10;
-      }
-      drawRichText(c, bx + 7, ty2, bub_w - 14, m->text, out ? C_BUB_OUT_TXT : C_FG, 1);
+        c.setCursor(bx + 7, ty);
+        c.print(namebuf);
 
-      // time + delivery ticks under bubble
-      char meta[24];
-      char ago[8];
+        c.setTextColor(C_FG_FAINT);
+        int rw = (int)strlen(sig) * 6;
+        c.setCursor(bx + bub_w - rw - 6, ty);
+        c.print(sig);
+
+        ty += 10;
+      }
+
+      drawRichText(c, bx + 7, ty, bub_w - 14, m->text,
+                   out ? C_BUB_OUT_TXT : C_FG, 1);
+
+      // Relative time under every bubble
+      char ago[10];
       ui.fmtAgo(ago, sizeof(ago), m->ts);
-      snprintf(meta, sizeof(meta), "%s", ago);
+
+      if (dbg_once) {
+        static uint32_t last_dbg_ms = 0;
+        if (millis() - last_dbg_ms > 1500) {
+          ui.termLog(C_TERM_SYS,
+                     "draw kind=%u out=%d ts=%lu ago='%s' hops=%u snr4=%d bub_w=%d sender='%s'",
+                     (unsigned)t->kind,
+                     out ? 1 : 0,
+                     (unsigned long)m->ts,
+                     ago,
+                     (unsigned)m->hops,
+                     (int)m->snr4,
+                     bub_w,
+                     m->sender);
+          last_dbg_ms = millis();
+        }
+        dbg_once = false;
+      }
+
       c.setTextSize(1);
       c.setTextColor(C_FG_FAINT);
-      int meta_y = y - 1;
-      (void)meta_y;
+
       if (out) {
-        const char* tick = (m->flags & MF_DELIVERED) ? "\xFB\xFB" : (m->flags & MF_FAILED) ? "x" : "...";
-        uint16_t tc = (m->flags & MF_DELIVERED) ? C_GREEN : (m->flags & MF_FAILED) ? C_RED : C_FG_FAINT;
-        c.setCursor(bx - strlen(ago) * 6 - 16 - 8, by + bub_h - 8);
+        c.setCursor(bx - (int)strlen(ago) * 6 - 18, by + bub_h - 8);
         c.print(ago);
+
+        const uint16_t tc =
+            (m->flags & MF_DELIVERED) ? C_GREEN :
+            (m->flags & MF_FAILED)    ? C_RED   : C_FG_FAINT;
         c.setTextColor(tc);
         c.setCursor(bx - 14, by + bub_h - 8);
-        if ((m->flags & MF_DELIVERED)) {
-          // double tick drawn manually
+        if (m->flags & MF_DELIVERED) {
           c.drawLine(bx - 14, by + bub_h - 5, bx - 12, by + bub_h - 3, tc);
-          c.drawLine(bx - 12, by + bub_h - 3, bx - 8, by + bub_h - 8, tc);
-          c.drawLine(bx - 10, by + bub_h - 5, bx - 8, by + bub_h - 3, tc);
-          c.drawLine(bx - 8, by + bub_h - 3, bx - 4, by + bub_h - 8, tc);
+          c.drawLine(bx - 12, by + bub_h - 3, bx -  8, by + bub_h - 8, tc);
+          c.drawLine(bx - 10, by + bub_h - 5, bx -  8, by + bub_h - 3, tc);
+          c.drawLine(bx -  8, by + bub_h - 3, bx -  4, by + bub_h - 8, tc);
+        } else if (m->flags & MF_FAILED) {
+          c.print("x");
         } else {
-          c.print(tick);
+          c.print("...");
         }
       } else {
         c.setCursor(bx + bub_w + 4, by + bub_h - 8);
@@ -184,49 +235,104 @@ void ChatScreen::draw() {
         _hits[_nhits].msg_idx = i;
         _nhits++;
       }
+
       y = by - 5;
     }
   }
 
-  // top fade line under tabs
+  // ---- tab bar drawn LAST so messages can never cover it ----
+  c.fillRect(0, STATUS_H + 1, SCREEN_W, TAB_H, C_BG);
+  {
+    int tx = 4;
+    c.setTextSize(1);
+    for (int i = 0; i < _norder && tx < SCREEN_W - 20; i++) {
+      DeckThread* tt = ui.store.thread(_order[i]);
+      if (!tt) continue;
+
+      char nm[16];
+      ellipsize(nm, sizeof(nm), tt->title);
+      char label[20];
+      snprintf(label, sizeof(label), "%s%s",
+               tt->kind == TK_CHANNEL ? "#" : "", nm);
+
+      const int w = (int)strlen(label) * 6 + 12;
+      const bool selt = (i == _tab);
+
+      if (selt) {
+        c.fillRoundRect(tx, STATUS_H + 2, w, TAB_H - 3, 4, C_ACCENT_DK);
+        c.drawRoundRect(tx, STATUS_H + 2, w, TAB_H - 3, 4, C_ACCENT);
+      }
+      c.setTextColor(selt ? C_FG : C_FG_DIM);
+      c.setCursor(tx + 6, STATUS_H + 5);
+      c.print(label);
+
+      if (tt->unread > 0 && !selt) {
+        c.fillCircle(tx + w - 3, STATUS_H + 4, 3, C_RED);
+      }
+      tx += w + 4;
+    }
+  }
   c.drawFastHLine(0, CHAT_TOP - 1, SCREEN_W, C_FG_FAINT);
 
   // ---- compose bar ----
   c.fillRect(0, CHAT_BOT, SCREEN_W, INPUT_H, C_BG_RAISED);
   c.setTextSize(1);
-  c.setTextColor(C_FG);
+
   char shown[46];
-  int maxc = 42;
+  const int maxc = 42;
   if (_clen <= maxc) {
     memcpy(shown, _compose, _clen);
     shown[_clen] = 0;
   } else {
     snprintf(shown, sizeof(shown), "..%s", _compose + _clen - maxc + 2);
   }
+
   c.setCursor(8, CHAT_BOT + 7);
-  if (_clen == 0) {
+  // Room backlog: block compose hint while syncing
+  bool room_sync = false;
+  uint32_t sync_rem = 0;
+  if (t && t->kind == TK_CONTACT && ui.mesh) {
+    ContactInfo* live = ui.mesh->lookupContactByPubKey(t->pub_prefix, 6);
+    if (live && live->type == ADV_TYPE_ROOM && ui.isRoomSyncing(live->id.pub_key)) {
+      room_sync = true;
+      sync_rem = ui.roomSyncRemainingMs(live->id.pub_key);
+    }
+  }
+  if (room_sync) {
+    c.setTextColor(C_YELLOW);
+    char hint[44];
+    snprintf(hint, sizeof(hint), "Syncing room... %us",
+             (unsigned)((sync_rem + 999) / 1000));
+    c.print(hint);
+  } else if (_clen == 0) {
     c.setTextColor(C_FG_FAINT);
-    c.print(t && t->kind == TK_CHANNEL ? "Message  (click=quick msgs)" : "Type a message  (click=quick)");
+    c.print(t && t->kind == TK_CHANNEL
+                ? "Message  (click=quick msgs)"
+                : "Type a message  (click=quick)");
   } else {
+    c.setTextColor(C_FG);
     c.print(shown);
-    // cursor
-    int cx2 = 8 + strlen(shown) * 6;
-    c.fillRect(cx2 + 1, CHAT_BOT + 6, 2, 10, C_ACCENT);
+    const int cx = 8 + (int)strlen(shown) * 6;
+    c.fillRect(cx + 1, CHAT_BOT + 6, 2, 10, C_ACCENT);
   }
 
-  // ---- canned quick-message picker overlay ----
+  // ---- canned quick-message picker ----
   if (_canned >= 0) {
-    int mw = 180, rh = 20, mh = N_CANNED * rh + 24;
-    int mx = (SCREEN_W - mw) / 2, my = (SCREEN_H - mh) / 2;
+    const int mw = 180, rh = 20, mh = N_CANNED * rh + 24;
+    const int mx = (SCREEN_W - mw) / 2;
+    const int my = (SCREEN_H - mh) / 2;
+
     c.fillRoundRect(mx, my, mw, mh, 8, C_BG_RAISED);
     c.drawRoundRect(mx, my, mw, mh, 8, C_ACCENT);
+
     c.setTextSize(1);
     c.setTextColor(C_ACCENT);
     c.setCursor(mx + 10, my + 7);
     c.print("Quick messages");
+
     for (int i = 0; i < N_CANNED; i++) {
-      int ry = my + 20 + i * rh;
-      bool s = i == _canned;
+      const int ry = my + 20 + i * rh;
+      const bool s = (i == _canned);
       if (s) c.fillRoundRect(mx + 4, ry - 1, mw - 8, rh - 2, 4, C_ACCENT_DK);
       c.setTextColor(s ? C_FG : C_FG_DIM);
       c.setCursor(mx + 12, ry + 4);

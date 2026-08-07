@@ -7,7 +7,7 @@
 #define MSG_FILE "/meshdeck_msgs.bin"
 #define MSG_FILE_MAGIC 0x4D444B31   // "MDK1"
 #define SAVE_DEBOUNCE_MS 8000
-#define PERSIST_PER_THREAD 16       // keep the newest N per thread on flash
+#define PERSIST_PER_THREAD 16
 
 uint16_t nameColor(const char* name) {
   uint32_t h = 5381;
@@ -68,21 +68,45 @@ DeckThread* MessageStore::forContact(const uint8_t* pub_key, const char* name) {
 }
 
 DeckMsg* MessageStore::addMsg(DeckThread* t, const char* sender, const char* text,
-                              uint32_t ts, uint8_t flags, int8_t snr4, uint8_t hops, uint32_t ack) {
+                              uint32_t ts, uint8_t flags, int8_t snr4, uint8_t hops, uint32_t ack,
+                              const uint8_t* voice, uint16_t voice_len) {
   if (!t || !t->msgs) return nullptr;
+
   DeckMsg* m = &t->msgs[t->head];
+
+  // Free any previous voice payload in this slot
+  if (m->voice_data) {
+    heap_caps_free(m->voice_data);
+    m->voice_data = nullptr;
+    m->voice_len = 0;
+  }
+
   memset(m, 0, sizeof(*m));
+
   m->ts = ts;
   m->ack = ack;
   m->snr4 = snr4;
   m->hops = hops;
   m->flags = flags;
+
   if (sender) StrHelper::strncpy(m->sender, sender, sizeof(m->sender));
-  StrHelper::strncpy(m->text, text, sizeof(m->text));
+  if (text)   StrHelper::strncpy(m->text, text, sizeof(m->text));
+
+  if (voice && voice_len > 0 && (flags & MF_VOICE)) {
+    m->voice_data = (uint8_t*)heap_caps_malloc(voice_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (m->voice_data) {
+      memcpy(m->voice_data, voice, voice_len);
+      m->voice_len = voice_len;
+    } else {
+      m->voice_len = 0;
+    }
+  }
+
   t->head = (t->head + 1) % MD_THREAD_MSGS;
   if (t->count < MD_THREAD_MSGS) t->count++;
   t->last_ts = ts;
   if (!(flags & MF_OUT)) t->unread++;
+
   _dirty_at = millis();
   return m;
 }
@@ -111,7 +135,6 @@ bool MessageStore::markDelivered(uint32_t ack) {
 }
 
 void MessageStore::markTimedOut() {
-  // newest outgoing message that is neither delivered nor failed
   DeckMsg* best = nullptr;
   for (int i = 0; i < _num; i++) {
     DeckThread* t = &_threads[i];
@@ -126,18 +149,18 @@ void MessageStore::markTimedOut() {
 }
 
 void MessageStore::markRead(DeckThread* t) {
-  if (t && t->unread) { t->unread = 0; }
+  if (t && t->unread) t->unread = 0;
 }
 
 void MessageStore::clearAll() {
-  // empty every conversation's ring (keeps the channel/DM tabs, wipes messages)
+  // Full wipe – removes the tabs themselves, not just the messages
   for (int i = 0; i < _num; i++) {
-    _threads[i].count = 0;
-    _threads[i].head = 0;
-    _threads[i].unread = 0;
-    _threads[i].last_ts = 0;
+    if (_threads[i].msgs) {
+      // free the ring if your allocator needs it (optional)
+    }
   }
-  persistNow();
+  _num = 0;                 // <-- this is the important line
+  persistNow();             // writes an empty store to /meshdeck_msgs.bin
 }
 
 int MessageStore::totalUnread() const {
@@ -148,7 +171,7 @@ int MessageStore::totalUnread() const {
 
 void MessageStore::sortByRecent(int* order) const {
   for (int i = 0; i < _num; i++) order[i] = i;
-  for (int i = 1; i < _num; i++) {       // insertion sort by last_ts desc
+  for (int i = 1; i < _num; i++) {
     int v = order[i];
     int j = i - 1;
     while (j >= 0 && _threads[order[j]].last_ts < _threads[v].last_ts) {
@@ -186,6 +209,7 @@ void MessageStore::persistNow() {
     f.write(&n, 1);
     for (int j = t->count - n; j < t->count; j++) {
       DeckMsg* m = msgAt(t, j);
+      // Note: voice_data pointer is not persisted (runtime only)
       f.write((uint8_t*)m, sizeof(DeckMsg));
     }
   }
@@ -215,6 +239,9 @@ void MessageStore::load() {
     if (!t->msgs) break;
     for (int j = 0; j < n; j++) {
       f.read((uint8_t*)&t->msgs[j], sizeof(DeckMsg));
+      // Clear any stale voice pointers loaded from flash
+      t->msgs[j].voice_data = nullptr;
+      t->msgs[j].voice_len = 0;
     }
     t->count = n;
     t->head = n % MD_THREAD_MSGS;
