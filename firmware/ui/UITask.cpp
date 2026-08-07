@@ -331,6 +331,9 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
 
 
   termLog(C_TERM_SYS, "MeshDeck v%s on MeshCore %s", MESHDECK_VERSION, FIRMWARE_VERSION);
+#ifdef MESHDECK_BETA
+  termLog(C_TERM_SYS, "beta build: Codec2 voice (LGPL-2.1) — see THIRD_PARTY.md");
+#endif
   // NOTE: format the floats separately - StrHelper::ftoa returns a shared static
   // buffer, so calling it twice in one printf would print the same value twice.
   {

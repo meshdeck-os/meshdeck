@@ -392,6 +392,11 @@ void SettingsScreen::select() {
     }
     case SI_ABOUT:
       ui.termLog(C_TERM_SYS, "MeshDeck v%s | MeshCore %s | built " FIRMWARE_BUILD_DATE, MESHDECK_VERSION, FIRMWARE_VERSION);
+      ui.termLog(C_TERM_SYS, "License: MIT (MeshDeck) — see LICENSE / THIRD_PARTY.md");
+#ifdef MESHDECK_BETA
+      ui.termLog(C_TERM_SYS,
+                 "Voice: Codec2 (LGPL-2.1) — firmware/codec2/COPYING");
+#endif
       ui.toast("MeshDeck v" MESHDECK_VERSION " - see terminal");
       break;
     default:

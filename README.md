@@ -86,13 +86,15 @@ firmware/              the firmware source (drops into MeshCore's examples/)
   main.cpp             entry point
   MyMesh.cpp/.h        MeshCore companion core + MeshDeck event hooks
   ui/                  the MeshDeck UI (screens, drivers, map data)
-platformio.local.ini   build environment (MeshDeck_TDeck_868)
+  codec2/              Codec2 speech codec sources (LGPL-2.1; beta voice only)
+platformio.local.ini   build environment (MeshDeck_TDeck_868 / _beta)
 build.sh / flash.sh    one-command build + flash
 webflasher/            your own browser-based flasher page (GitHub Pages)
 sdcard/meshdeck-maps/  ready-made UK+Ireland high-detail map pack (uk.mdm)
 .github/workflows/     cloud build + web flasher deploy (GitHub Actions)
 tools/gen_mapdata.py   regenerates the built-in map from Natural Earth data
 tools/gen_sdmap.py     builds SD map packs (.mdm) for any region
+THIRD_PARTY.md         third-party licenses and notices
 ```
 
 ## Quick start
@@ -118,8 +120,22 @@ path are in **FLASHING.md**.
 
 ## Credits & licences
 
-- [MeshCore](https://github.com/meshcore-dev/MeshCore) mesh stack - MIT, (c) meshcore-dev contributors
-- Map data: [Natural Earth](https://www.naturalearthdata.com/) - public domain
-- QR encoding: [qrcodegen](https://github.com/nayuki/QR-Code-generator) - MIT, (c) Project Nayuki
-- MeshDeck UI written for this project - MIT. Not affiliated with the MeshCore
-  store or MeshOS; "MeshOS" is used only to describe feature parity.
+**MeshDeck application code** is **MIT** — see [LICENSE](LICENSE).
+
+**Third-party software** (not re-licensed by MeshDeck):
+
+| Component | License | Role |
+|-----------|---------|------|
+| [MeshCore](https://github.com/meshcore-dev/MeshCore) | MIT | Mesh stack (fetched at build time) |
+| [Codec2](https://github.com/drowe67/codec2) | **LGPL-2.1** | Speech codec for **beta voice calls only** (`MESHDECK_BETA`); sources in `firmware/codec2/`, full text in `firmware/codec2/COPYING` |
+| [Natural Earth](https://www.naturalearthdata.com/) | Public domain | Offline map data |
+| [qrcodegen](https://github.com/nayuki/QR-Code-generator) | MIT | QR display |
+
+Full notices and LGPL compliance notes: **[THIRD_PARTY.md](THIRD_PARTY.md)**.
+
+Stable firmware builds do **not** include Codec2. Beta builds that enable voice
+statically link Codec2; recipients get Codec2 source under LGPL-2.1 from this
+repository and can rebuild the firmware from source.
+
+MeshDeck is not affiliated with the MeshCore store or MeshOS; "MeshOS" is used
+only to describe feature parity.
