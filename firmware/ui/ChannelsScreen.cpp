@@ -29,7 +29,7 @@ void ChannelsScreen::draw() {
   if (_adding) {
     c.setTextColor(C_ACCENT);
     c.setCursor(12, CH_TOP + 6);
-    c.print(_phase == 0 ? "New channel name:" : "Channel key (base64):");
+    c.print(_phase == 0 ? "Add channel - type a name:" : "Channel key (base64):");
     _edit[_elen] = 0;
     c.fillRect(12, CH_TOP + 26, SCREEN_W - 24, 18, C_BG);
     c.drawRect(12, CH_TOP + 26, SCREEN_W - 24, 18, C_ACCENT);
@@ -38,10 +38,15 @@ void ChannelsScreen::draw() {
     c.print(_edit);
     c.fillRect(18 + _elen * 6 + 1, CH_TOP + 30, 2, 11, C_ACCENT);
     if (ui.symShift()) { c.setTextColor(C_CYAN); c.setCursor(SCREEN_W - 34, CH_TOP + 31); c.print("123"); }
+    if (_phase == 0) {
+      c.setTextColor(C_FG_FAINT);
+      c.setCursor(12, CH_TOP + 52);
+      c.print("type a name, then Enter for the key");
+    }
     if (_phase == 1) {
       c.setTextColor(C_FG_FAINT);
       c.setCursor(12, CH_TOP + 52);
-      c.print("padding added automatically");
+      c.print("shared key from the channel owner");
     }
     c.setTextColor(ui.symShift() ? C_CYAN : C_FG_FAINT);
     c.setCursor(6, SCREEN_H - 10);
@@ -92,7 +97,13 @@ void ChannelsScreen::select() {
 void ChannelsScreen::applyEdit() {
   _edit[_elen] = 0;
   if (_phase == 0) {
-    StrHelper::strncpy(_newname, _edit, sizeof(_newname));
+    // Ignore a leading '#'/spaces (the list already shows '#') and refuse an
+    // empty name, so pressing Enter on a blank field no longer creates a junk
+    // channel called "#Channel". (#13)
+    char* nm = _edit;
+    while (*nm == '#' || *nm == ' ') nm++;
+    if (!*nm) return;               // nothing typed - stay in the field
+    StrHelper::strncpy(_newname, nm, sizeof(_newname));
     _phase = 1;
     _edit[0] = 0;
     _elen = 0;

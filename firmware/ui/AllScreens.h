@@ -255,8 +255,17 @@ private:
 class DiagScreen : public Screen {
 public:
   DiagScreen(UITask& u) : Screen(u) {}
+  void enter() override;
   void draw() override;
   bool key(uint8_t c) override;
+  bool nav(NavEvent e) override;
+private:
+  void refreshStorage();               // sample flash + SD usage (page 2) (#3)
+  uint8_t _page = 0;                    // 0 = radio diagnostics, 1 = storage/perf
+  uint32_t _flash_used_kb = 0, _flash_tot_kb = 0;
+  bool _sd_present = false;
+  int _ram_head = 0;                    // free-RAM graph ring head (#3)
+  uint32_t _sd_free_mb = 0, _sd_tot_mb = 0;
 };
 
 // ---------------------------------------------------------------- SOS beacon

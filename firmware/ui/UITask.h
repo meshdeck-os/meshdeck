@@ -280,6 +280,7 @@ public:
   const char* remoteScreenURL();
   // input injected by the web client (consumed in dispatchInput)
   volatile uint8_t _inj_key = 0;
+  uint8_t _dim_level = 0;          // last backlight level set by always-on-clock dimming (#1)
   volatile int     _inj_nav = 0;
   volatile bool    _inj_tap = false;
   volatile int16_t _inj_x = 0, _inj_y = 0;

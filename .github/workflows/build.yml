@@ -92,6 +92,7 @@ jobs:
   # One-time setup: repo Settings -> Pages -> Source: "GitHub Actions"
   deploy-flasher:
     needs: build
+    if: github.ref == 'refs/heads/main'   # PR branches build but don't deploy Pages
     runs-on: ubuntu-latest
     permissions:
       pages: write

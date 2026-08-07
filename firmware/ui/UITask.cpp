@@ -16,10 +16,9 @@
 #include <SD.h>
 
 #define SETTINGS_FILE "/meshdeck_set.bin"
+#define SD_SETTINGS_FILE "/meshdeck/config.bin"   // SD backup, survives a flash wipe (#12)
 #define ROOM_CRED_FILE "/meshdeck_rooms.bin"
 #define ROOM_CRED_MAGIC 0x524D4331u  // "RMC1"
-
-
 
 // ---------------------------------------------------------------- text utils
 // Built-in GFX font: glyphs for 0x20..0x7E only. UTF-8 / · / – / … print as junk.
@@ -274,11 +273,28 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
   prefs = p;
 
   // load persisted settings now that SPIFFS is mounted
+  bool loaded = false;
   File f = SPIFFS.open(SETTINGS_FILE, "r");
   if (f) {
     DeckSettings tmp;
-    if (f.read((uint8_t*)&tmp, sizeof(tmp)) == sizeof(tmp) && tmp.magic == DECKSET_MAGIC) set = tmp;
+    if (f.read((uint8_t*)&tmp, sizeof(tmp)) == sizeof(tmp) && tmp.magic == DECKSET_MAGIC) { set = tmp; loaded = true; }
     f.close();
+  }
+  // If SPIFFS held no valid config (fresh flash, or wiped by a Launcher reflash)
+  // restore from the SD backup and re-seed SPIFFS, so the first-boot wizard is
+  // skipped and the node comes back exactly as it was. (#12)
+  if (!loaded && hw.sdBegin()) {
+    File s = SD.open(SD_SETTINGS_FILE, "r");
+    if (s) {
+      DeckSettings tmp;
+      if (s.read((uint8_t*)&tmp, sizeof(tmp)) == sizeof(tmp) && tmp.magic == DECKSET_MAGIC) { set = tmp; loaded = true; }
+      s.close();
+    }
+    hw.sdEnd();
+    if (loaded) {
+      File w = SPIFFS.open(SETTINGS_FILE, "w");
+      if (w) { w.write((uint8_t*)&set, sizeof(set)); w.close(); }
+    }
   }
   // Migrate old saves off the wrong touch mapping: map 0 (landscape-direct) is
   // never correct on the T-Deck GT911, so treat a stored 0 as "use the default".
@@ -371,6 +387,14 @@ void UITask::saveSettings() {
   if (f) {
     f.write((uint8_t*)&set, sizeof(set));
     f.close();
+  }
+  // Also mirror to SD so the config survives a flash wipe - e.g. reflashing via
+  // bmorcelli's Launcher, which erases SPIFFS. Auto-restored on next boot. (#12)
+  if (hw.sdBegin()) {
+    SD.mkdir("/meshdeck");
+    File s = SD.open(SD_SETTINGS_FILE, FILE_WRITE);
+    if (s) { s.write((uint8_t*)&set, sizeof(set)); s.close(); }
+    hw.sdEnd();
   }
 }
 
@@ -1387,11 +1411,23 @@ void UITask::loop() {
   }
 }
 void UITask::checkDim() {
-  if (set.timeout_s == 0 || set.always_on) return;
+  if (set.timeout_s == 0) return;
   uint32_t idle = millis() - hw.lastActivityMillis();
-  if (hw.isDisplayOn() && idle > (uint32_t)set.timeout_s * 1000) {
-    hw.displayOff();
+  bool expired = idle > (uint32_t)set.timeout_s * 1000;
+
+  if (set.always_on) {
+    // Always-On Clock: don't power the panel off (the clock must stay visible),
+    // but after the timeout drop to a low backlight to save battery instead of
+    // sitting at full brightness. Restore the user's brightness on activity. (#1)
+    const uint8_t DIM = 30;               // matches the min brightness (30..255)
+    if (hw.isDisplayOn()) {
+      uint8_t target = expired ? DIM : set.brightness;
+      if (target != _dim_level) { hw.setBacklight(target); _dim_level = target; }
+    }
+    return;
   }
+
+  if (hw.isDisplayOn() && expired) hw.displayOff();
 }
 
 // Remap a letter key to the number/symbol printed on it (T-Deck legend), used
@@ -2350,11 +2386,76 @@ bool OnboardScreen::touch(const TouchEvent& e) {
 
 // ---------------------------------------------------------------- Radio diagnostics screen
 
+void DiagScreen::enter() { _page = 0; }
+
+void DiagScreen::refreshStorage() {
+  _flash_tot_kb  = SPIFFS.totalBytes() / 1024;
+  _flash_used_kb = SPIFFS.usedBytes()  / 1024;
+  _sd_present = false;
+  if (ui.hw.sdBegin()) {                       // grabs the shared SPI bus briefly
+    uint64_t tot = SD.totalBytes(), used = SD.usedBytes();
+    if (tot > 0) { _sd_present = true; _sd_tot_mb = tot / (1024*1024); _sd_free_mb = (tot - used) / (1024*1024); }
+    ui.hw.sdEnd();
+  }
+}
+
 void DiagScreen::draw() {
   GFXcanvas16& c = ui.cv();
   c.fillScreen(C_BG);
-  ui.drawStatusBar("Radio Diagnostics");
   c.setTextSize(1);
+
+  // rolling free-RAM history, sampled once per redraw (~1/s on this screen) (#3)
+  static const int RAMN = 116;
+  static uint16_t ramHist[RAMN];
+  ramHist[_ram_head] = (uint16_t)(ESP.getFreeHeap() / 1024);
+  _ram_head = (_ram_head + 1) % RAMN;
+
+  if (_page == 1) {                              // ---- page 2: storage + graph (#3)
+    ui.drawStatusBar("Storage & Performance");
+    int y2 = STATUS_H + 10; char sv[48];
+    c.setTextColor(C_ACCENT); c.setCursor(8, y2); c.print("Storage"); y2 += 15;
+
+    c.setTextColor(C_FG_DIM); c.setCursor(12, y2); c.print("Flash (SPIFFS)");
+    snprintf(sv, sizeof(sv), "%u / %u KB", (unsigned)_flash_used_kb, (unsigned)_flash_tot_kb);
+    c.setTextColor(C_FG); c.setCursor(170, y2); c.print(sv); y2 += 14;
+
+    c.setTextColor(C_FG_DIM); c.setCursor(12, y2); c.print("SD card");
+    if (_sd_present) { snprintf(sv, sizeof(sv), "%u free / %u MB", (unsigned)_sd_free_mb, (unsigned)_sd_tot_mb); c.setTextColor(C_GREEN); }
+    else             { snprintf(sv, sizeof(sv), "no card"); c.setTextColor(C_FG_FAINT); }
+    c.setCursor(170, y2); c.print(sv); y2 += 14;
+
+    c.setTextColor(C_FG_DIM); c.setCursor(12, y2); c.print("CPU clock");
+    snprintf(sv, sizeof(sv), "%u MHz", (unsigned)getCpuFrequencyMhz());
+    c.setTextColor(C_FG); c.setCursor(170, y2); c.print(sv); y2 += 18;
+
+    c.setTextColor(C_ACCENT); c.setCursor(8, y2); c.print("Free RAM (KB)"); y2 += 14;
+    const int GX = 34, GY = y2, GW = SCREEN_W - GX - 8, GH = SCREEN_H - GY - 22;
+    c.drawRect(GX, GY, GW, GH, C_FG_FAINT);
+    uint16_t mn = 0xFFFF, mx = 0;
+    for (int i = 0; i < RAMN; i++) { uint16_t vv = ramHist[i]; if (!vv) continue; if (vv < mn) mn = vv; if (vv > mx) mx = vv; }
+    if (!mx) { c.setTextColor(C_FG_FAINT); c.setCursor(GX + 6, GY + GH / 2); c.print("sampling..."); }
+    else {
+      if (mx == mn) mx = mn + 1;
+      int px = -1, py = -1;
+      for (int i = 0; i < RAMN; i++) {
+        uint16_t val = ramHist[(_ram_head + i) % RAMN];
+        if (!val) continue;
+        int x = GX + i * GW / RAMN;
+        int yy = GY + GH - (int)((long)(val - mn) * GH / (mx - mn));
+        if (yy < GY) yy = GY; if (yy > GY + GH) yy = GY + GH;
+        if (px >= 0) c.drawLine(px, py, x, yy, C_ACCENT);
+        px = x; py = yy;
+      }
+      char lbl[8];
+      c.setTextColor(C_FG_FAINT);
+      snprintf(lbl, sizeof(lbl), "%u", (unsigned)mx); c.setCursor(4, GY - 3);        c.print(lbl);
+      snprintf(lbl, sizeof(lbl), "%u", (unsigned)mn); c.setCursor(4, GY + GH - 6);    c.print(lbl);
+    }
+    c.setTextColor(C_FG_FAINT); c.setCursor(6, SCREEN_H - 10); c.print("roll left = back to radio");
+    return;
+  }
+
+  ui.drawStatusBar("Radio Diagnostics");
   NodePrefs* p = ui.prefs;
   int y = STATUS_H + 10;
   char v[40];
@@ -2415,16 +2516,22 @@ void DiagScreen::draw() {
   c.setTextColor(C_FG); c.setCursor(150, y); c.print(v);
 
   c.setTextColor(C_FG_FAINT); c.setCursor(6, SCREEN_H - 10);
-  c.print("press A to send a flood advert");
+  c.print("A=advert     roll right = storage & graph");
 }
 
 bool DiagScreen::key(uint8_t k) {
-  if (k == 'a' || k == 'A') {
+  if (_page == 0 && (k == 'a' || k == 'A')) {
     if (ui.mesh) ui.mesh->advertFlood();
     ui.toast("Advert sent", C_CYAN);
     return true;
   }
   return false;
+}
+
+bool DiagScreen::nav(NavEvent e) {
+  if (e == NAV_RIGHT && _page == 0) { _page = 1; refreshStorage(); return true; }
+  if (e == NAV_LEFT  && _page == 1) { _page = 0; return true; }
+  return false;   // BACK (hold) still propagates to leave the screen
 }
 
 // ---------------------------------------------------------------- SOS beacon screen
