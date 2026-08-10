@@ -33,6 +33,9 @@ private:
   void sendCanned(int i);
   void switchTab(int dir);
   DeckThread* cur();
+  void drawAddContactDialog();
+  bool tryOfferContactShare(const char* text);
+  bool confirmAddContact();
 
   int _tab = 0;              // index into sorted order
   int _order[MD_MAX_THREADS];
@@ -40,10 +43,16 @@ private:
   int _scroll = 0;           // px from bottom
   char _compose[MD_TEXT_LEN];
   int _clen = 0;
-  // bubble hitboxes for tap-to-reply / QR
-  struct Hit { int16_t y0, y1; int msg_idx; } _hits[24];
+  // bubble hitboxes for tap-to-reply / QR / contact share
+  struct Hit { int16_t y0, y1; int msg_idx; uint8_t has_share; } _hits[24];
   int _nhits = 0;
   int _canned = -1;          // -1 = off, else index into the quick-message list
+
+  // Pending "add shared contact?" dialog
+  bool    _add_dlg = false;
+  uint8_t _add_pub[32] = {0};
+  uint8_t _add_type = 1;
+  char    _add_name[32] = {0};
 };
 
 // ---------------------------------------------------------------- Contacts
@@ -75,7 +84,7 @@ private:
   int  _fmap[FMAP_MAX];
   int  _fn = 0;
 };
-// ---------------------------------------------------------------- Map
+// ---------------------------------------------------------------- Map (classic)
 
 class MapScreen : public Screen {
 public:
@@ -91,6 +100,27 @@ private:
   double _clat = 54.5, _clon = -3.0;   // UK default centre
   float _scale = 12.0f;                // px per degree lon
   bool _centered_once = false;
+};
+
+// ---------------------------------------------------------------- NewMaps (OSM multi-layer vector)
+
+struct NewMapPack;  // from NewMap.h
+
+class NewMapsScreen : public Screen {
+public:
+  NewMapsScreen(UITask& u) : Screen(u) {}
+  void enter() override;
+  void draw() override;
+  bool key(uint8_t c) override;
+  bool nav(NavEvent e) override;
+  bool touch(const TouchEvent& e) override;
+private:
+  void project(double lat, double lon, int& x, int& y) const;
+  void drawPack(const NewMapPack* pk);
+  void drawNodes();
+  double _clat = 47.68, _clon = -116.78;  // N. Idaho default
+  float  _scale = 256.0f;
+  bool   _centered_once = false;
 };
 
 // ---------------------------------------------------------------- Last heard
@@ -119,7 +149,10 @@ public:
   void draw() override;
   bool key(uint8_t c) override;
   bool nav(NavEvent e) override;
+  // Local UI lines (">") always go to the open console.
   void onCliResponse(const char* from, const char* text);
+  // Remote traffic: only shown if console is open for this peer (prefix match).
+  void onPeerLine(const uint8_t* prefix6, const char* from, const char* text);
   void onLoginFinished(const char* name, bool ok);
 private:
   enum Mode : uint8_t { MODE_LIST = 0, MODE_LOGIN, MODE_CONSOLE };
@@ -132,6 +165,8 @@ private:
   void resyncSelected(bool full_history);
   ContactInfo* selContact();
   void replaceWaitingLine(const char* from, const char* text);
+  bool consoleIsFor(const uint8_t* prefix6) const;
+  void ensureConsoleFor(const uint8_t* prefix6);
 
   uint8_t _prefixes[24][6];
   char _names[24][28];
@@ -148,6 +183,8 @@ private:
   struct CLine { char from[12]; char text[70]; };
   CLine _clines[14];
   int _cn = 0;
+  uint8_t _console_prefix[6] = {0};  // which peer the console buffer belongs to
+  bool _console_bound = false;
 };
 
 // ---------------------------------------------------------------- Trace

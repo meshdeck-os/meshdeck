@@ -505,10 +505,21 @@ bool MyMesh::allowPacketForward(const mesh::Packet* packet) {
 int MyMesh::loginWithPassword(const ContactInfo& recipient, const char* password,
                               uint32_t& est_timeout) {
   if (!password) password = "";
-  int result = sendLogin(recipient, password, est_timeout);
+  // Always flood login requests. sendLogin() uses a stored direct path when
+  // present, and a stale multi-hop path is a very common cause of silent
+  // timeouts — even to a node sitting next to you. Path-return on success
+  // re-learns a good direct path.
+  ContactInfo flood_target = recipient;
+  const int was_path = (int)recipient.out_path_len;
+  flood_target.out_path_len = OUT_PATH_UNKNOWN;
+  int result = sendLogin(flood_target, password, est_timeout);
   if (result != MSG_SEND_FAILED) {
     memcpy(&pending_login, recipient.id.pub_key, 4);
-    Serial.printf("[mesh] login TX -> %s (pending)\n", recipient.name);
+    Serial.printf("[mesh] login TX -> %s (pending flood; was_path=%d type=%u pwd_len=%u)\n",
+                  recipient.name, was_path, (unsigned)recipient.type,
+                  (unsigned)strlen(password));
+  } else {
+    Serial.printf("[mesh] login TX FAILED -> %s\n", recipient.name);
   }
   return result;
 }
@@ -1006,19 +1017,17 @@ void MyMesh::onContactResponse(const ContactInfo &contact, const uint8_t *data, 
   }
 
   // ── Login response ─────────────────────────────────────────
-  // IMPORTANT: only consume pending_login for *recognized* login payloads.
-  // Room servers (and path-return extras) can deliver other RESPONSEs while
-  // we wait; treating those as login FAIL clears pending and leaves UI stuck
-  // on "waiting for reply..." even though history messages then arrive.
+  // Match companion_radio / meshdeck-os: any RESPONSE from the pending peer
+  // completes the login attempt (OK / LOGIN_OK / else FAIL). Always notify UI.
+  // Room backlog still also completes via completePendingLogin() on messages.
   if (pending_login && memcmp(&pending_login, contact.id.pub_key, 4) == 0 &&
-      len >= 6) {
+      len >= 5) {
     constexpr uint16_t kDefaultKeepAliveSecs = 300;
-    bool recognized = false;
     bool ok = false;
     int i = 0;
 
-    if (memcmp(&data[4], "OK", 2) == 0) {
-      recognized = true;
+    if (len >= 6 && memcmp(&data[4], "OK", 2) == 0) {
+      // Legacy repeater login OK text
       ok = true;
       startConnection(contact, kDefaultKeepAliveSecs);
       out_frame[i++] = PUSH_CODE_LOGIN_SUCCESS;
@@ -1026,8 +1035,7 @@ void MyMesh::onContactResponse(const ContactInfo &contact, const uint8_t *data, 
       memcpy(&out_frame[i], contact.id.pub_key, 6);
       i += 6;
     } else if (data[4] == RESP_SERVER_LOGIN_OK) {
-      // data[4]==0 — ensure this is not a random short blob: need keep-alive field
-      recognized = true;
+      // Modern login OK (repeaters often send keep-alive field as 0)
       ok = true;
       uint16_t keep_alive_secs = (len > 5) ? ((uint16_t)data[5]) * 16 : 0;
       if (keep_alive_secs == 0) keep_alive_secs = kDefaultKeepAliveSecs;
@@ -1040,28 +1048,22 @@ void MyMesh::onContactResponse(const ContactInfo &contact, const uint8_t *data, 
       i += 4;
       out_frame[i++] = (len > 7) ? data[7] : 0;
       out_frame[i++] = (len > 12) ? data[12] : 0;
-    } else if (data[4] == 'E' || data[4] == 'F' || data[4] == 'N') {
-      // Common textual failures: ERR / FAIL / NO / ...
-      recognized = true;
+    } else {
+      // Companion treats any other payload as login FAIL
       ok = false;
       out_frame[i++] = PUSH_CODE_LOGIN_FAIL;
       out_frame[i++] = 0;
       memcpy(&out_frame[i], contact.id.pub_key, 6);
       i += 6;
+      Serial.printf("[mesh] login FAIL payload from=%s len=%u b4=0x%02X\n",
+                    contact.name, (unsigned)len, data[4]);
     }
 
-    if (recognized) {
-      pending_login = 0;
-      _serial->writeFrame(out_frame, i);
-      if (_ui) _ui->onLoginResult(contact, ok);
-      Serial.printf("[mesh] login %s from=%s (response)\n",
-                    ok ? "OK" : "FAIL", contact.name);
-    } else {
-      Serial.printf(
-          "[mesh] ignore non-login RESPONSE while pending login from=%s "
-          "len=%u b4=0x%02X\n",
-          contact.name, (unsigned)len, data[4]);
-    }
+    pending_login = 0;
+    if (_serial) _serial->writeFrame(out_frame, i);
+    if (_ui) _ui->onLoginResult(contact, ok);
+    Serial.printf("[mesh] login %s from=%s (response)\n",
+                  ok ? "OK" : "FAIL", contact.name);
   }
 
   // ── Status response ────────────────────────────────────────

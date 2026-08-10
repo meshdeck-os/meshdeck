@@ -8,6 +8,7 @@
 #include "DeckHW.h"
 #include "MessageStore.h"
 #include "SDMap.h"
+#include "NewMap.h"
 #include "Theme.h"
 #include <helpers/SensorManager.h>
 
@@ -16,7 +17,7 @@ class UITask;
 class WebServer;   // ESP32 web server (remote screen), included only in WebScreen.cpp
 
 enum ScreenId : uint8_t {
-  SCR_HOME = 0, SCR_CHAT, SCR_CONTACTS, SCR_MAP, SCR_LASTHEARD, SCR_REPEATERS,
+  SCR_HOME = 0, SCR_CHAT, SCR_CONTACTS, SCR_MAP, SCR_NEWMAPS, SCR_LASTHEARD, SCR_REPEATERS,
   SCR_TRACE, SCR_NOISE, SCR_TERMINAL, SCR_SETTINGS, SCR_QR,
   SCR_ONBOARD, SCR_DIAG, SCR_SOS, SCR_MAPDL, SCR_WIFI, SCR_CHANNELS, SCR_VOICE, SCR_COUNT
 };
@@ -144,7 +145,8 @@ public:
   GFXcanvas16& cv() { return hw.cv(); }
   DeckHW hw;
   MessageStore store;
-  SDMaps sdmaps;               // high-detail map packs from SD card
+  SDMaps sdmaps;               // classic high-detail coastline packs (.mdm)
+  NewMaps newmaps;             // NewMaps multi-layer OSM packs (.mdv)
   void reloadSDMaps();         // rescan the card (Settings action)
   MyMesh* mesh = nullptr;
   SensorManager* sensors = nullptr;
@@ -167,7 +169,7 @@ public:
   struct RoomCred {
     uint8_t pub_prefix[6];
     char    password[16];   // MeshCore max 15 + NUL
-    uint8_t auto_login;     // 1 = re-login after reboot
+    uint8_t auto_login;     // 1 = re-login after reboot (rooms only; ignored for repeaters)
     uint8_t type;           // ADV_TYPE_ROOM / REPEATER
     char    name[24];
   };
@@ -178,8 +180,10 @@ public:
   void saveRoomCred(const ContactInfo& c, const char* password, bool auto_login);
   void forgetRoomCred(const uint8_t* prefix6);
   bool setRoomAutoLogin(const uint8_t* prefix6, bool on);
+  // from_auto=false (manual): may preempt a different peer's in-flight login.
+  // from_auto=true: never interrupts a manual login; skips if any login pending.
   bool beginRoomLogin(const ContactInfo& c, const char* password, bool auto_login_if_ok,
-                      bool force = false);
+                      bool force = false, bool from_auto = false);
   void tryAutoLoginRooms();   // call after boot / when repeaters list opens
   void onLoginResult(const ContactInfo& from, bool ok) override;
   bool roomSessionOk(const uint8_t* prefix6) const;  // logged in this boot
@@ -255,7 +259,10 @@ public:
   TraceResult trace;
 
   // repeater console (CLI responses from repeaters)
+  // Local/system line for the open repeater console (from usually ">")
   void repLog(const char* from, const char* text);
+  // Remote room/repeater line — only appears if console is open for that peer
+  void repLogFrom(const ContactInfo& from, const char* text);
 
   // status helpers
   int batteryPercent() const;
@@ -324,7 +331,8 @@ private:
   uint8_t  _auto_login_wait_rounds = 0;  // contact-not-found reschedule budget
   uint8_t  _login_pending_prefix[6] = {0};
   char     _login_pending_pwd[16] = {0};
-  bool     _login_pending_auto = true;
+  bool     _login_pending_auto = true;   // save auto_login flag if this attempt succeeds
+  bool     _login_pending_from_auto = false;  // true if boot auto-login started this attempt
   bool     _login_pending_valid = false;
   uint32_t _login_pending_ms = 0;  // millis when pending started (timeout stuck logins)
   uint32_t _auto_login_at = 0;   // millis when to run next auto-login (0 = idle)

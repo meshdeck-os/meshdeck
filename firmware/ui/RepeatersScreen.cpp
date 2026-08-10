@@ -36,7 +36,22 @@ ContactInfo* RepeatersScreen::selContact() {
   return ui.mesh->lookupContactByPubKey(_prefixes[_sel], 6);
 }
 
+bool RepeatersScreen::consoleIsFor(const uint8_t* prefix6) const {
+  if (!prefix6 || !_console_bound) return false;
+  return memcmp(_console_prefix, prefix6, 6) == 0;
+}
+
+void RepeatersScreen::ensureConsoleFor(const uint8_t* prefix6) {
+  if (!prefix6) return;
+  if (_console_bound && memcmp(_console_prefix, prefix6, 6) == 0) return;
+  memcpy(_console_prefix, prefix6, 6);
+  _console_bound = true;
+  _cn = 0;  // new peer — don't mix prior console history
+}
+
 void RepeatersScreen::onCliResponse(const char* from, const char* text) {
+  // Local UI lines (">") only while a console is open
+  if (_mode != MODE_CONSOLE) return;
   if (_cn >= 14) {
     memmove(&_clines[0], &_clines[1], sizeof(CLine) * 13);
     _cn = 13;
@@ -48,7 +63,15 @@ void RepeatersScreen::onCliResponse(const char* from, const char* text) {
   _cn++;
 }
 
+void RepeatersScreen::onPeerLine(const uint8_t* prefix6, const char* from, const char* text) {
+  // Only traffic for the peer whose console is open
+  if (_mode != MODE_CONSOLE) return;
+  if (!consoleIsFor(prefix6)) return;
+  onCliResponse(from, text);
+}
+
 void RepeatersScreen::replaceWaitingLine(const char* from, const char* text) {
+  if (_mode != MODE_CONSOLE) return;
   // Replace last "waiting for reply..." line so the console doesn't look stuck
   for (int i = _cn - 1; i >= 0; i--) {
     if (strstr(_clines[i].text, "waiting for reply") != nullptr) {
@@ -64,6 +87,11 @@ void RepeatersScreen::replaceWaitingLine(const char* from, const char* text) {
 
 void RepeatersScreen::onLoginFinished(const char* name, bool ok) {
   _awaiting_login = false;
+  if (_mode != MODE_CONSOLE) return;
+  // Only update if this login result is for the console's peer
+  if (name && name[0] && _sel < _n) {
+    if (strcmp(_names[_sel], name) != 0) return;
+  }
   if (ok)
     replaceWaitingLine(name ? name : "sys", "LOGIN OK - session active");
   else
@@ -73,16 +101,21 @@ void RepeatersScreen::onLoginFinished(const char* name, bool ok) {
 void RepeatersScreen::openLogin() {
   ContactInfo* ct = selContact();
   if (!ct) return;
+  ensureConsoleFor(ct->id.pub_key);
   _mode = MODE_LOGIN;
   _llen = 0;
   _line[0] = 0;
   _show_pwd = false;
-  _login_auto = true;
+  // Auto-login is rooms-only (repeaters: remember password, no boot login)
+  _login_auto = (ct->type == ADV_TYPE_ROOM);
   // Prefill saved password
   if (const UITask::RoomCred* e = ui.findRoomCred(ct->id.pub_key)) {
     StrHelper::strncpy(_line, e->password, sizeof(_line));
     _llen = (int)strlen(_line);
-    _login_auto = e->auto_login != 0;
+    if (ct->type == ADV_TYPE_ROOM)
+      _login_auto = e->auto_login != 0;
+    else
+      _login_auto = false;
   }
 }
 
@@ -90,11 +123,13 @@ void RepeatersScreen::submitLogin() {
   ContactInfo* ct = selContact();
   if (!ct) { _mode = MODE_LIST; return; }
   _line[_llen] = 0;
-  // Empty password is allowed (some rooms use blank)
-  if (ui.beginRoomLogin(*ct, _line, _login_auto)) {
+  // Empty password is allowed (some rooms use blank).
+  // Never request boot auto-login for repeaters.
+  const bool want_auto = (ct->type == ADV_TYPE_ROOM) && _login_auto;
+  if (ui.beginRoomLogin(*ct, _line, want_auto)) {
     // Leave password screen so user sees console / wait state (not silent stuck)
+    ensureConsoleFor(ct->id.pub_key);
     _mode = MODE_CONSOLE;
-    _cn = 0;
     _awaiting_login = true;
     onCliResponse(">", "login sent...");
     onCliResponse(">", "waiting for reply...");
@@ -117,8 +152,10 @@ void RepeatersScreen::submitLogin() {
 
 void RepeatersScreen::openConsole() {
   if (!_n) return;
+  ContactInfo* ct = selContact();
+  if (ct) ensureConsoleFor(ct->id.pub_key);
+  else if (_sel < _n) ensureConsoleFor(_prefixes[_sel]);
   _mode = MODE_CONSOLE;
-  _cn = 0;
   _llen = 0;
   _line[0] = 0;
 }
@@ -126,13 +163,20 @@ void RepeatersScreen::openConsole() {
 void RepeatersScreen::toggleAuto() {
   ContactInfo* ct = selContact();
   if (!ct) return;
+  if (ct->type != ADV_TYPE_ROOM) {
+    ui.toast("Auto-login is for rooms only", C_YELLOW);
+    return;
+  }
   const UITask::RoomCred* e = ui.findRoomCred(ct->id.pub_key);
   if (!e) {
     ui.toast("Login once first to save", C_YELLOW);
     return;
   }
   bool next = !e->auto_login;
-  ui.setRoomAutoLogin(ct->id.pub_key, next);
+  if (!ui.setRoomAutoLogin(ct->id.pub_key, next)) {
+    ui.toast("Auto-login is for rooms only", C_YELLOW);
+    return;
+  }
   char msg[40];
   snprintf(msg, sizeof(msg), "Auto-login %s", next ? "ON" : "OFF");
   ui.toast(msg, next ? C_GREEN : C_YELLOW);
@@ -174,21 +218,31 @@ void RepeatersScreen::draw() {
     int cx = 18 + (_llen * 6);
     c.fillRect(cx, STATUS_H + 44, 2, 12, C_ACCENT);
 
-    // Auto-login toggle
+    // Auto-login toggle (rooms only)
+    const bool is_room = ct && ct->type == ADV_TYPE_ROOM;
     c.setTextColor(C_FG_DIM);
     c.setCursor(12, STATUS_H + 80);
     c.print("After login");
-    c.setTextColor(_login_auto ? C_GREEN : C_FG_FAINT);
-    c.setCursor(12, STATUS_H + 96);
-    c.printf("[%c] Remember & auto-login on boot", _login_auto ? 'x' : ' ');
+    if (is_room) {
+      c.setTextColor(_login_auto ? C_GREEN : C_FG_FAINT);
+      c.setCursor(12, STATUS_H + 96);
+      c.printf("[%c] Remember & auto-login on boot", _login_auto ? 'x' : ' ');
+    } else {
+      c.setTextColor(C_FG_FAINT);
+      c.setCursor(12, STATUS_H + 96);
+      c.print("Password saved for one-tap (no auto)");
+    }
 
     c.setTextColor(C_FG_FAINT);
     c.setCursor(12, STATUS_H + 120);
     c.print("ENTER  login");
     c.setCursor(12, STATUS_H + 134);
-    c.print("A  toggle auto-login");
+    if (is_room)
+      c.print("A/TAB  auto-login");
+    else
+      c.print("(auto-login: rooms only)");
     c.setCursor(12, STATUS_H + 148);
-    c.print(".  show/hide password");
+    c.printf("UP  %s password", _show_pwd ? "hide" : "show");
     c.setCursor(12, STATUS_H + 162);
     c.print("BACK  cancel");
 
@@ -221,22 +275,69 @@ void RepeatersScreen::draw() {
       c.print(on ? "IN" : (_awaiting_login ? "wait" : "out"));
     }
 
+    // Console log: long replies must wrap with real line advance or they
+    // paint over the next message (GFX default wrap doesn't move our y).
+    const int text_x = 4 + 11 * 6;
+    const int text_max_w = SCREEN_W - text_x - 4;
+    const int line_h = 10;
+    const int log_bot = SCREEN_H - 22;
+    c.setTextSize(1);
+    c.setTextWrap(false);
+
     int y = STATUS_H + 6;
-    for (int i = 0; i < _cn; i++) {
+    for (int i = 0; i < _cn && y < log_bot; i++) {
       c.setTextColor(C_FG_FAINT);
       c.setCursor(4, y);
       c.print(_clines[i].from);
-      c.setTextColor(C_TERM_RX);
-      c.setCursor(4 + 11 * 6, y);
-      c.print(_clines[i].text);
-      y += 12;
+
+      // Wrap body text; first line aligns with "from", continuations indent
+      const char* p = _clines[i].text;
+      int body_y = y;
+      const int max_chars = text_max_w / 6;
+      if (max_chars < 1) {
+        y += line_h;
+        continue;
+      }
+      bool first = true;
+      while (*p && body_y + line_h <= log_bot) {
+        int n = 0;
+        int last_space = -1;
+        while (p[n] && n < max_chars) {
+          if (p[n] == ' ') last_space = n;
+          if (p[n] == '\n') { n++; break; }
+          n++;
+        }
+        int take = n;
+        if (p[n] && last_space > 8 && n >= max_chars)
+          take = last_space + 1;  // break on word when possible
+        if (take <= 0) take = 1;
+
+        int print_n = take;
+        if (print_n > 0 && p[print_n - 1] == '\n') print_n--;
+        char buf[56];
+        if (print_n >= (int)sizeof(buf)) print_n = (int)sizeof(buf) - 1;
+        memcpy(buf, p, print_n);
+        buf[print_n] = 0;
+
+        c.setTextColor(C_TERM_RX);
+        c.setCursor(text_x, body_y);
+        c.print(buf);
+
+        body_y += line_h;
+        p += take;
+        while (*p == ' ') p++;
+        first = false;
+        (void)first;
+      }
+      // Next log entry starts below the last wrapped line of this one
+      y = body_y + 2;
     }
 
     c.fillRect(0, SCREEN_H - 20, SCREEN_W, 20, C_BG_RAISED);
     c.setCursor(6, SCREEN_H - 14);
     if (_llen == 0) {
       c.setTextColor(C_FG_FAINT);
-      c.print("cmd  |  l=login  s=stats  a=advert");
+      c.print("cmd  |  /l /s /a /n /c /r");
     } else {
       c.setTextColor(C_FG);
       _line[_llen] = 0;
@@ -283,14 +384,16 @@ void RepeatersScreen::draw() {
     bool connected = live && ui.mesh->isLoggedInto(live->id.pub_key);
     bool sess_ok = ui.roomSessionOk(_prefixes[i]);
     const UITask::RoomCred* cred = ui.findRoomCred(_prefixes[i]);
-    bool has_key = cred && cred->password[0];
-    bool auto_on = cred && cred->auto_login;
+    bool has_key = cred && (cred->password[0] || true);  // any saved cred
+    has_key = (cred != nullptr);
+    // AUTO chip only for rooms that opted into boot re-login
+    bool auto_on = is_room && cred && cred->auto_login;
     char ago[8];
     ui.fmtAgo(ago, sizeof(ago), _last_adv[i]);
 
     // Two independent facts (ASCII only for GFX font):
     //   1) session now: IN vs out
-    //   2) auto-login preference: auto on / auto off / no key
+    //   2) rooms: auto-login preference; repeaters: key saved only
     bool logged_in = connected || sess_ok;
     c.setTextColor(C_FG_FAINT);
     c.setCursor(12, y + 15);
@@ -298,7 +401,7 @@ void RepeatersScreen::draw() {
     if (logged_in && auto_on)
       c.printf("%s | LOGGED IN | auto on", kind);
     else if (logged_in && has_key)
-      c.printf("%s | LOGGED IN | auto off", kind);
+      c.printf("%s | LOGGED IN | key", kind);
     else if (logged_in)
       c.printf("%s | LOGGED IN", kind);
     else if (auto_on)
@@ -308,10 +411,10 @@ void RepeatersScreen::draw() {
     else
       c.printf("%s | not in | last %s", kind, ago);
 
-    // Chips (right -> left). Always show session chip; AUTO only if enabled.
+    // Chips (right -> left). Always show session chip; AUTO only for rooms.
     //   IN   = currently logged in (this boot / keep-alive)
-    //   AUTO = will re-login after reboot (preference, not "online")
-    //   KEY  = password saved but auto-login off
+    //   AUTO = room will re-login after reboot
+    //   KEY  = password saved (one-tap); not auto for repeaters
     int cx = SCREEN_W - 6;
     if (auto_on) {
       const char* lab = "AUTO";
@@ -351,7 +454,7 @@ void RepeatersScreen::draw() {
 
   c.setTextColor(C_FG_FAINT);
   c.setCursor(4, SCREEN_H - 24);
-  c.print("IN=session  AUTO=boot  R=resync backlog");
+  c.print("IN=session  AUTO=rooms only  R=resync");
   c.setCursor(4, SCREEN_H - 12);
   c.print("ENTER open  L login  A auto  C console");
 }
@@ -368,8 +471,8 @@ void RepeatersScreen::resyncSelected(bool full_history) {
     openLogin();
     return;
   }
+  ensureConsoleFor(ct->id.pub_key);
   _mode = MODE_CONSOLE;
-  _cn = 0;
   _awaiting_login = true;
   onCliResponse(">", full_history ? "resync full backlog..." : "re-login...");
   onCliResponse(">", "waiting for reply...");
@@ -383,6 +486,51 @@ void RepeatersScreen::sendLine() {
   ContactInfo* ct = selContact();
   if (!ct || _llen == 0) { _llen = 0; return; }
   _line[_llen] = 0;
+
+  // Local slash commands — typed as /l, /s, ... then ENTER so bare letters
+  // can start normal words (e.g. "set", "advert", "clock").
+  if (_line[0] == '/') {
+    const char* p = _line + 1;
+    while (*p == ' ') p++;
+    char tok[16];
+    int ti = 0;
+    while (*p && *p != ' ' && ti < (int)sizeof(tok) - 1) {
+      char ch = *p++;
+      if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
+      tok[ti++] = ch;
+    }
+    tok[ti] = 0;
+
+    if (tok[0] == 0) { _llen = 0; _line[0] = 0; return; }
+
+    // UI-only actions (not sent to the node)
+    if (strcmp(tok, "l") == 0 || strcmp(tok, "login") == 0) {
+      onCliResponse(">", "/login");
+      _llen = 0; _line[0] = 0;
+      openLogin();
+      return;
+    }
+    if (strcmp(tok, "r") == 0 || strcmp(tok, "resync") == 0) {
+      onCliResponse(">", "/resync");
+      _llen = 0; _line[0] = 0;
+      resyncSelected(true);
+      return;
+    }
+
+    // Expand short forms into the remote CLI command, then send
+    const char* expand = nullptr;
+    if (strcmp(tok, "s") == 0 || strcmp(tok, "stats") == 0) expand = "stats";
+    else if (strcmp(tok, "a") == 0 || strcmp(tok, "advert") == 0) expand = "advert";
+    else if (strcmp(tok, "c") == 0 || strcmp(tok, "clock") == 0) expand = "clock sync";
+    else if (strcmp(tok, "n") == 0 || strcmp(tok, "neighbors") == 0) expand = "neighbors";
+
+    if (expand) {
+      StrHelper::strncpy(_line, expand, sizeof(_line));
+      _llen = (int)strlen(_line);
+    }
+    // Unknown /cmd is left as-is and sent to the node
+  }
+
   // Room backlog sync: any TX to the room contends with stop-and-wait push ACKs
   if (!ui.allowSendToContact(*ct, true)) return;
   uint32_t est_timeout;
@@ -393,29 +541,37 @@ void RepeatersScreen::sendLine() {
     ui.termLog(C_TERM_TX, "[cmd->%s] %s", ct->name, _line);
   }
   _llen = 0;
+  _line[0] = 0;
 }
 
 bool RepeatersScreen::key(uint8_t k) {
   // ── Login dialog ──
   if (_mode == MODE_LOGIN) {
     if (k == 0x0D) { submitLogin(); return true; }
-    if (k == 0x08) {
+    if (k == 0x08 || k == 0x7F) {
       if (_llen > 0) { _llen--; return true; }
       _mode = MODE_LIST;
       return true;
     }
     if (k == 0x1B) { _mode = MODE_LIST; _llen = 0; return true; }
     if (k == 'a' || k == 'A') {
-      // Only when line empty so typing 'a' in password works… use dedicated keys
-      // when empty; when non-empty treat as password char below.
-      if (_llen == 0) { _login_auto = !_login_auto; return true; }
+      // Rooms only: toggle auto-login when password line empty
+      ContactInfo* ct = selContact();
+      if (_llen == 0 && ct && ct->type == ADV_TYPE_ROOM) {
+        _login_auto = !_login_auto;
+        return true;
+      }
     }
-    if ((k == '.' || k == '`') && _llen == 0) {
-      _show_pwd = !_show_pwd;
-      return true;
+    // Toggle auto with tab when typing (rooms only; tab rarely in passwords)
+    if (k == 0x09) {
+      ContactInfo* ct = selContact();
+      if (ct && ct->type == ADV_TYPE_ROOM) {
+        _login_auto = !_login_auto;
+        return true;
+      }
     }
-    // Toggle auto with tab when typing (rare); also allow explicit keys:
-    if (k == 0x09) { _login_auto = !_login_auto; return true; }
+    // All printable chars (including '.') go into the password.
+    // Show/hide uses trackball UP/DOWN — see nav().
     if (k >= 32 && k < 127 && _llen < 15) {  // MeshCore max 15
       _line[_llen++] = k;
       return true;
@@ -424,28 +580,14 @@ bool RepeatersScreen::key(uint8_t k) {
   }
 
   // ── Console ──
+  // No bare-letter shortcuts here — letters type into the command line.
+  // Shortcuts are slash commands: /l /s /a /n /c /r then ENTER (see sendLine).
   if (_mode == MODE_CONSOLE) {
     if (k == 0x0D) { sendLine(); return true; }
-    if (k == 0x08) {
+    if (k == 0x08 || k == 0x7F) {
       if (_llen > 0) { _llen--; return true; }
       _mode = MODE_LIST;
       return true;
-    }
-    if (_llen == 0) {
-      if (k == 'l' || k == 'L') { openLogin(); return true; }
-      if (k == 'r' || k == 'R') { resyncSelected(true); return true; }
-      if (k == 's' || k == 'S') {
-        strcpy(_line, "stats"); _llen = 5; sendLine(); return true;
-      }
-      if (k == 'a' || k == 'A') {
-        strcpy(_line, "advert"); _llen = 6; sendLine(); return true;
-      }
-      if (k == 'c' || k == 'C') {
-        strcpy(_line, "clock sync"); _llen = 10; sendLine(); return true;
-      }
-      if (k == 'n' || k == 'N') {
-        strcpy(_line, "neighbors"); _llen = 9; sendLine(); return true;
-      }
     }
     if (k >= 32 && k < 127 && _llen < (int)sizeof(_line) - 2) {
       _line[_llen++] = k;
@@ -464,10 +606,12 @@ bool RepeatersScreen::key(uint8_t k) {
     if (on) {
       openConsole();
     } else if (e) {
-      // One-tap re-login with saved cred (blank password rooms included)
-      if (ui.beginRoomLogin(*ct, e->password, e->auto_login != 0)) {
+      // One-tap re-login with saved cred (blank password rooms included).
+      // Boot auto-login only for rooms — repeaters keep the password only.
+      const bool want_auto = (ct->type == ADV_TYPE_ROOM) && e->auto_login;
+      if (ui.beginRoomLogin(*ct, e->password, want_auto)) {
+        ensureConsoleFor(ct->id.pub_key);
         _mode = MODE_CONSOLE;
-        _cn = 0;
         _awaiting_login = true;
         onCliResponse(">", "re-login with saved password...");
         onCliResponse(">", "waiting for reply...");
@@ -503,8 +647,17 @@ bool RepeatersScreen::nav(NavEvent e) {
   if (_mode == MODE_LOGIN) {
     if (e == NAV_SELECT) { submitLogin(); return true; }
     if (e == NAV_BACK) { _mode = MODE_LIST; _llen = 0; return true; }
+    // Trackball up/down: show/hide password (never steals printable keys)
+    if (e == NAV_UP || e == NAV_DOWN) {
+      _show_pwd = !_show_pwd;
+      return true;
+    }
     if (e == NAV_LEFT || e == NAV_RIGHT) {
-      _login_auto = !_login_auto;
+      ContactInfo* ct = selContact();
+      if (ct && ct->type == ADV_TYPE_ROOM) {
+        _login_auto = !_login_auto;
+        return true;
+      }
       return true;
     }
     return false;

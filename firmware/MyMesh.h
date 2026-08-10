@@ -131,6 +131,9 @@ public:
   // Room/repeater login: sendLogin + track pending so UI gets onLoginResult
   int loginWithPassword(const ContactInfo& recipient, const char* password,
                         uint32_t& est_timeout);
+  // Drop in-flight mesh login so a different peer can be attempted (manual preempt)
+  void clearPendingLogin() { pending_login = 0; }
+  bool hasPendingLogin() const { return pending_login != 0; }
   // Public wrappers (BaseChatMesh marks these protected)
   bool isLoggedInto(const uint8_t* pub_key) { return hasConnectionTo(pub_key); }
   void endServerSession(const uint8_t* pub_key) { stopConnection(pub_key); }

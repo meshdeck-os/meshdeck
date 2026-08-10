@@ -10,9 +10,10 @@ static const AppDef APPS[] = {
   { "Heard",     SCR_LASTHEARD, C_YELLOW, 'H', false },
   { "Repeaters", SCR_REPEATERS, C_ORANGE, 'R', false },
   { "Map",       SCR_MAP,       C_CYAN,   'M', false },
+  { "NewMaps",   SCR_NEWMAPS,   C_GREEN,  'N', false },   // OSM multi-layer vector
   { "Radio",     SCR_DIAG,      C_GREEN,  'i', false },   // diagnostics
   { "Trace",     SCR_TRACE,     C_PURPLE, 'T', false },
-  { "Noise",     SCR_NOISE,     C_PINK,   'N', false },
+  { "Noise",     SCR_NOISE,     C_PINK,   '~', false },
   { "Terminal",  SCR_TERMINAL,  C_FG,     '>', false },
   { "SOS",       SCR_SOS,       C_RED,    '!', false },
   { "Settings",  SCR_SETTINGS,  C_FG_DIM, 'S', false },
@@ -21,9 +22,9 @@ static const AppDef APPS[] = {
 };
 #define N_APPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
 
-// grid layout: 5 rows x 3 cols
+// grid layout: 5 rows x 3 cols (15 cells; N_APPS must fit)
 #define GRID_X0   14
-#define GRID_Y0   98
+#define GRID_Y0   90
 #define GRID_ROWS 5
 #define CELL_W    100
 #define CELL_H    28

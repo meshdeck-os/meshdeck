@@ -314,6 +314,7 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
   _screens[SCR_CHAT]      = new ChatScreen(*this);
   _screens[SCR_CONTACTS]  = new ContactsScreen(*this);
   _screens[SCR_MAP]       = new MapScreen(*this);
+  _screens[SCR_NEWMAPS]   = new NewMapsScreen(*this);
   _screens[SCR_LASTHEARD] = new LastHeardScreen(*this);
   _screens[SCR_REPEATERS] = new RepeatersScreen(*this);
   _screens[SCR_TRACE]     = new TraceScreen(*this);
@@ -365,7 +366,18 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
       termLog(C_TERM_SYS, "map pack: %s (%u pts, %u places)", p->filename, p->npts, p->ncities);
     }
   } else if (packs == 0) {
-    termLog(C_TERM_SYS, "sd card: no map packs in /meshdeck-maps");
+    termLog(C_TERM_SYS, "sd card: no classic .mdm packs in /meshdeck-maps");
+  }
+
+  int npacks = newmaps.load(hw);
+  if (npacks > 0) {
+    for (int i = 0; i < npacks; i++) {
+      const NewMapPack* p = newmaps.pack(i);
+      termLog(C_TERM_SYS, "newmap: %s (%u pts, %u feats, %u labels)",
+              p->filename, p->n_points, p->n_feats, p->n_labels);
+    }
+  } else if (npacks == 0) {
+    termLog(C_TERM_SYS, "sd card: no NewMaps .mdv packs in /meshdeck-maps");
   }
 
   // Speaker hardware self-test (after display/I2C/settings are up).
@@ -378,10 +390,12 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
 
 void UITask::reloadSDMaps() {
   int packs = sdmaps.load(hw);
-  char buf[40];
-  if (packs < 0) snprintf(buf, sizeof(buf), "No SD card found");
-  else snprintf(buf, sizeof(buf), "%d map pack%s loaded", packs, packs == 1 ? "" : "s");
-  toast(buf, packs > 0 ? C_GREEN : C_YELLOW);
+  int npacks = newmaps.load(hw);
+  char buf[48];
+  if (packs < 0 && npacks < 0) snprintf(buf, sizeof(buf), "No SD card found");
+  else snprintf(buf, sizeof(buf), "%d mdm + %d mdv packs",
+                packs < 0 ? 0 : packs, npacks < 0 ? 0 : npacks);
+  toast(buf, (packs > 0 || npacks > 0) ? C_GREEN : C_YELLOW);
   termLog(C_TERM_SYS, "%s", buf);
 }
 
@@ -770,7 +784,8 @@ void UITask::onContactMsg(const ContactInfo& from, const char* text, uint32_t se
       noteRoomSyncRx(from.id.pub_key);
     char line[72];
     snprintf(line, sizeof(line), "%s: %.48s", sender_clean, body_clean);
-    repLog(from.name, line);
+    // Only into the console for *this* room/repeater (not the open peer)
+    repLogFrom(from, line);
     termLog(C_TERM_RX, "[room/%s] %s: %s", from.name, sender_clean, body_clean);
   } else {
     termLog(C_TERM_RX, "[DM] %s: %s", sender_clean, body_clean);
@@ -790,7 +805,7 @@ void UITask::onContactMsg(const ContactInfo& from, const char* text, uint32_t se
 
 void UITask::onCliResponse(const ContactInfo& from, const char* text) {
   termLog(C_TERM_RX, "[%s] %s", from.name, text);
-  repLog(from.name, text);
+  repLogFrom(from, text);
   _dirty = true;
 }
 void UITask::rememberRecentContact(const ContactInfo& c) {
@@ -1073,7 +1088,7 @@ bool UITask::startVoiceCall(const ContactInfo& to) {
 }
 
 void UITask::repLog(const char* from, const char* text) {
-  // Sanitize for GFX font before queueing on the console list
+  // Local/system console line (e.g. ">") — shown on the open console only
   char fbuf[32], tbuf[72];
   StrHelper::strncpy(fbuf, from ? from : "?", sizeof(fbuf));
   StrHelper::strncpy(tbuf, text ? text : "", sizeof(tbuf));
@@ -1081,6 +1096,16 @@ void UITask::repLog(const char* from, const char* text) {
   sanitizeAscii(tbuf);
   RepeatersScreen* r = (RepeatersScreen*)_screens[SCR_REPEATERS];
   if (r) r->onCliResponse(fbuf, tbuf);
+}
+
+void UITask::repLogFrom(const ContactInfo& from, const char* text) {
+  char fbuf[32], tbuf[72];
+  StrHelper::strncpy(fbuf, from.name[0] ? from.name : "?", sizeof(fbuf));
+  StrHelper::strncpy(tbuf, text ? text : "", sizeof(tbuf));
+  sanitizeAscii(fbuf);
+  sanitizeAscii(tbuf);
+  RepeatersScreen* r = (RepeatersScreen*)_screens[SCR_REPEATERS];
+  if (r) r->onPeerLine(from.id.pub_key, fbuf, tbuf);
 }
 
 // ---------------------------------------------------------------- status helpers
@@ -1356,12 +1381,25 @@ void UITask::loop() {
     // Stuck login pending: free UI so ENTER on password can work again
     if (_login_pending_valid && _login_pending_ms &&
         (int32_t)(millis() - _login_pending_ms) > (int32_t)LOGIN_PENDING_TIMEOUT_MS) {
+      const bool was_auto = _login_pending_from_auto;
+      // No RESPONSE usually means wrong password, clock/replay, offline, or
+      // (historically) a stale direct path. Reset path so a retry floods cleanly.
+      if (mesh) {
+        if (ContactInfo* live =
+                mesh->lookupContactByPubKey(_login_pending_prefix, 6)) {
+          if (live->out_path_len != OUT_PATH_UNKNOWN) {
+            mesh->resetPathTo(*live);
+            termLog(C_TERM_SYS, "login timeout: path reset for %s", live->name);
+          }
+        }
+        mesh->clearPendingLogin();
+      }
       clearLoginPending("timeout (no response)");
-      toast("Login timed out - try again", C_YELLOW);
+      toast("Login timed out - check pwd/clock, retry", C_YELLOW);
       RepeatersScreen* rs = (RepeatersScreen*)_screens[SCR_REPEATERS];
       if (rs) rs->onLoginFinished("sys", false);
-      // Retry auto-login chain after a short pause
-      _auto_login_at = millis() + 1500;
+      // Retry auto-login later; after manual timeout wait longer so user can act
+      _auto_login_at = millis() + (was_auto ? 1500 : 15000);
     }
     // End room sync windows that finished quietly / hit max; refresh countdown UI
     for (int i = 0; i < ROOM_SYNC_SLOTS; i++) {
@@ -1676,13 +1714,20 @@ void UITask::loadRoomCreds() {
   int n = 0;
   if (f.read((uint8_t*)&magic, 4) != 4 || magic != ROOM_CRED_MAGIC) { f.close(); return; }
   if (f.read((uint8_t*)&n, 4) != 4 || n < 0 || n > ROOM_CRED_MAX) { f.close(); return; }
+  bool scrubbed = false;
   for (int i = 0; i < n; i++) {
     if (f.read((uint8_t*)&_room_creds[i], sizeof(RoomCred)) != sizeof(RoomCred)) break;
     _room_creds[i].password[sizeof(_room_creds[i].password) - 1] = 0;
     _room_creds[i].name[sizeof(_room_creds[i].name) - 1] = 0;
+    // Migration: never auto-login repeaters (passwords may still be saved)
+    if (_room_creds[i].type != ADV_TYPE_ROOM && _room_creds[i].auto_login) {
+      _room_creds[i].auto_login = 0;
+      scrubbed = true;
+    }
     _room_cred_n++;
   }
   f.close();
+  if (scrubbed) saveRoomCreds();
   termLog(C_TERM_SYS, "room logins: %d saved", _room_cred_n);
 }
 
@@ -1713,6 +1758,8 @@ uint8_t UITask::autoLoginMaxTries() const {
 bool UITask::roomNeedsAutoLogin(int idx) const {
   if (idx < 0 || idx >= _room_cred_n) return false;
   const RoomCred& e = _room_creds[idx];
+  // Auto-login is for rooms only — never boot-login repeaters
+  if (e.type != ADV_TYPE_ROOM) return false;
   // auto_login alone is enough — blank passwords are valid for some rooms
   if (!e.auto_login) return false;
   if (_room_session_ok[idx]) return false;
@@ -1721,6 +1768,8 @@ bool UITask::roomNeedsAutoLogin(int idx) const {
   ContactInfo* live = mesh->lookupContactByPubKey(e.pub_prefix, 6);
   // Contact not in book yet — still "needs" auto-login when it appears
   if (!live) return true;
+  // Live type wins if contact book disagrees with saved cred
+  if (live->type != ADV_TYPE_ROOM) return false;
   if (mesh->isLoggedInto(live->id.pub_key)) return false;
   return true;
 }
@@ -1730,6 +1779,7 @@ void UITask::clearLoginPending(const char* why) {
   _login_pending_valid = false;
   _login_pending_ms = 0;
   _login_pending_pwd[0] = 0;
+  _login_pending_from_auto = false;
   if (why) termLog(C_TERM_SYS, "login pending cleared: %s", why);
 }
 
@@ -1919,11 +1969,13 @@ void UITask::saveRoomCred(const ContactInfo& c, const char* password, bool auto_
     e = &_room_creds[idx];
   }
   StrHelper::strncpy(e->password, password, sizeof(e->password));
-  e->auto_login = auto_login ? 1 : 0;
   e->type = c.type;
+  // Auto-login only applies to room servers (not repeaters)
+  e->auto_login = (c.type == ADV_TYPE_ROOM && auto_login) ? 1 : 0;
   StrHelper::strncpy(e->name, c.name, sizeof(e->name));
   saveRoomCreds();
-  termLog(C_TERM_SYS, "saved login for %s (auto=%d)", e->name, e->auto_login ? 1 : 0);
+  termLog(C_TERM_SYS, "saved login for %s (auto=%d type=%u)",
+          e->name, e->auto_login ? 1 : 0, (unsigned)e->type);
 }
 
 void UITask::forgetRoomCred(const uint8_t* prefix6) {
@@ -1945,13 +1997,21 @@ void UITask::forgetRoomCred(const uint8_t* prefix6) {
 bool UITask::setRoomAutoLogin(const uint8_t* prefix6, bool on) {
   RoomCred* e = findRoomCredMut(prefix6);
   if (!e) return false;
+  // Repeaters can save a password for one-tap, but never boot auto-login
+  if (e->type != ADV_TYPE_ROOM) {
+    if (e->auto_login) {
+      e->auto_login = 0;
+      saveRoomCreds();
+    }
+    return false;
+  }
   e->auto_login = on ? 1 : 0;
   saveRoomCreds();
   return true;
 }
 
 bool UITask::beginRoomLogin(const ContactInfo& c, const char* password,
-                            bool auto_login_if_ok, bool force) {
+                            bool auto_login_if_ok, bool force, bool from_auto) {
   if (!mesh || !password) return false;
 
   // Already keep-alive connected — treat as success so UI leaves password screen
@@ -1970,17 +2030,36 @@ bool UITask::beginRoomLogin(const ContactInfo& c, const char* password,
   if (_login_pending_valid && _login_pending_ms &&
       (int32_t)(millis() - _login_pending_ms) > (int32_t)LOGIN_PENDING_TIMEOUT_MS) {
     clearLoginPending("timeout");
+    mesh->clearPendingLogin();
   }
 
   if (_login_pending_valid) {
-    // Same room: allow re-send (previous attempt may have been lost on air)
+    // Same peer: allow re-send (previous attempt may have been lost on air)
     if (memcmp(_login_pending_prefix, c.id.pub_key, 6) == 0) {
-      clearLoginPending("retry same room");
+      clearLoginPending("retry same peer");
+      mesh->clearPendingLogin();
+    } else if (from_auto) {
+      // Auto never steals the slot from another peer (esp. not from manual)
+      termLog(C_TERM_SYS, "auto-login skip %s (login in flight for other peer)",
+              c.name);
+      return false;
     } else {
-      termLog(C_TERM_SYS, "login skip %s (another login in flight)", c.name);
-      toast("Login already in progress", C_YELLOW);
+      // Manual login wins: drop the other in-flight attempt (usually auto-login)
+      termLog(C_TERM_SYS,
+              "manual login to %s preempts pending login (was auto=%d)",
+              c.name, _login_pending_from_auto ? 1 : 0);
+      clearLoginPending("preempted by manual");
+      mesh->clearPendingLogin();
+      // Pause auto-login so it doesn't immediately re-grab the slot
+      _auto_login_at = 0;
+    }
+  } else if (mesh->hasPendingLogin()) {
+    // UI cleared but mesh still waiting — same rules
+    if (from_auto) {
+      termLog(C_TERM_SYS, "auto-login skip %s (mesh pending_login set)", c.name);
       return false;
     }
+    mesh->clearPendingLogin();
   }
 
   // Stale session_ok without mesh connection: allow re-login (force clear flag)
@@ -1992,6 +2071,7 @@ bool UITask::beginRoomLogin(const ContactInfo& c, const char* password,
   memcpy(_login_pending_prefix, c.id.pub_key, 6);
   StrHelper::strncpy(_login_pending_pwd, password, sizeof(_login_pending_pwd));
   _login_pending_auto = auto_login_if_ok;
+  _login_pending_from_auto = from_auto;
   _login_pending_valid = true;
   _login_pending_ms = millis();
   uint32_t est = 0;
@@ -2004,8 +2084,11 @@ bool UITask::beginRoomLogin(const ContactInfo& c, const char* password,
   char msg[48];
   snprintf(msg, sizeof(msg), "Logging in to %s...", c.name);
   toast(msg, C_CYAN);
-  termLog(C_TERM_TX, "[login->%s] pwd_len=%u", c.name, (unsigned)strlen(password));
-  repLog(">", "login sent...");
+  // Passwords are per-node (keyed by pub prefix) — log which target + length only
+  termLog(C_TERM_TX, "[login->%s] type=%u pwd_len=%u auto_try=%d",
+          c.name, (unsigned)c.type, (unsigned)strlen(password), from_auto ? 1 : 0);
+  // Only appear on this peer's open console (not another room/repeater console)
+  if (!from_auto) repLogFrom(c, "login sent...");
   return true;
 }
 
@@ -2017,6 +2100,7 @@ void UITask::tryAutoLoginRooms() {
   if (_login_pending_valid && _login_pending_ms &&
       (int32_t)(millis() - _login_pending_ms) > (int32_t)LOGIN_PENDING_TIMEOUT_MS) {
     clearLoginPending("auto-login timeout");
+    mesh->clearPendingLogin();
   }
   if (_login_pending_valid) return;  // wait for current attempt
 
@@ -2033,10 +2117,13 @@ void UITask::tryAutoLoginRooms() {
     // Count this TX attempt before send
     if (_room_auto_tries[i] >= max_tries) continue;
     _room_auto_tries[i]++;
-    termLog(C_TERM_TX, "auto-login try %u/%u -> %s",
+    // Use this room's own saved password only (creds keyed by 6-byte pub prefix)
+    termLog(C_TERM_TX, "auto-login try %u/%u -> %s pwd_len=%u",
             (unsigned)_room_auto_tries[i], (unsigned)max_tries,
-            _room_creds[i].name[0] ? _room_creds[i].name : live->name);
-    if (beginRoomLogin(*live, _room_creds[i].password, true)) {
+            _room_creds[i].name[0] ? _room_creds[i].name : live->name,
+            (unsigned)strlen(_room_creds[i].password));
+    if (beginRoomLogin(*live, _room_creds[i].password, true,
+                       false /* force */, true /* from_auto */)) {
       // If already connected, beginRoomLogin returns true without pending —
       // don't leave a dead retry schedule for this room
       if (mesh->isLoggedInto(live->id.pub_key)) {
@@ -2068,7 +2155,7 @@ void UITask::tryAutoLoginRooms() {
 void UITask::onLoginResult(const ContactInfo& from, bool ok) {
   termLog(ok ? C_TERM_RX : C_TERM_ERR, "[%s] login %s", from.name, ok ? "OK" : "FAIL");
   // Clear "waiting for reply..." with a definitive console line
-  repLog(from.name, ok ? "LOGIN OK - session active" : "LOGIN FAILED");
+  repLogFrom(from, ok ? "LOGIN OK - session active" : "LOGIN FAILED");
 
   bool match = _login_pending_valid &&
                memcmp(_login_pending_prefix, from.id.pub_key, 6) == 0;
@@ -2077,8 +2164,12 @@ void UITask::onLoginResult(const ContactInfo& from, bool ok) {
       memcmp(_login_pending_prefix, from.id.pub_key, 4) == 0)
     match = true;
 
+  // Capture before clearLoginPending wipes flags
+  const bool was_auto = _login_pending_from_auto;
+
   if (ok) {
-    // Always persist credentials on successful pending login (blank pwd OK)
+    // Always persist credentials on successful pending login (blank pwd OK).
+    // saveRoomCred keys by this contact's pub prefix — never overwrites another node.
     if (match) {
       saveRoomCred(from, _login_pending_pwd, _login_pending_auto);
     }
@@ -2107,13 +2198,14 @@ void UITask::onLoginResult(const ContactInfo& from, bool ok) {
     if (rs) rs->onLoginFinished(from.name, ok);
   }
 
-  // Schedule next auto-login only if some room still has tries left
+  // Schedule next auto-login only if some room still has tries left.
+  // After a manual login, wait longer so auto doesn't immediately re-block.
   bool more = false;
   for (int i = 0; i < _room_cred_n; i++) {
     if (roomNeedsAutoLogin(i)) { more = true; break; }
   }
   if (more) {
-    _auto_login_at = millis() + 2500;
+    _auto_login_at = millis() + (was_auto ? 2500 : 15000);
   } else {
     _auto_login_at = 0;
     // Log if any room exhausted tries without session
