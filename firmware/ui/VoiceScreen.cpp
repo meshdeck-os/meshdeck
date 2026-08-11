@@ -7,9 +7,9 @@
 #endif
 
 /*
- * VoiceScreen – Codec2 1200 half-duplex PTT over MeshCore
+ * VoiceScreen - Codec2 1200 half-duplex PTT over MeshCore
  *
- * Entry: Contacts → "Call…" → prepareOutbound + auto INVITE.
+ * Entry: Contacts -> "Call..." -> prepareOutbound + auto INVITE.
  * Inbound: global Accept/Decline overlay; Accept opens this screen.
  *
  * Half-duplex walkie model:
@@ -18,11 +18,11 @@
  *   While RX/listen: decode + speaker; PTT may barge-in (stops RX).
  *   Leaving the screen always hangs up and tears down workers.
  *
- * Airtime: buffer ~1 s of Codec2 1200 per LoRa request (24 frames × 6 B),
+ * Airtime: buffer ~1 s of Codec2 1200 per LoRa request (24 frames x 6 B),
  * stop-and-wait (1 inflight) so ACKs can return on half-duplex radio.
- * Size limited by MeshCore sendRequest (data_len ≤ MAX_PACKET_PAYLOAD-16).
+ * Size limited by MeshCore sendRequest (data_len <= MAX_PACKET_PAYLOAD-16).
  *
- * Frame (v2): [flags][seq][payload…]
+ * Frame (v2): [flags][seq][payload...]
  * Control: flags |= 0x80, low nibble = INVITE/ACCEPT/DECLINE/END/BUSY.
  */
 
@@ -37,7 +37,7 @@
 #define PCM16_SAMPLES 640
 #endif
 
-// ── Control flags (high bit = control) ────────────────────────
+// -- Control flags (high bit = control) ------------------------
 #define VOICE_FLAG_EOS     0x01
 #define VOICE_FLAG_RETX    0x02
 #define VOICE_FLAG_CTRL    0x80
@@ -82,7 +82,7 @@ static int          g_packets_sent = 0;
 
 // Call RX volume 1..10 (default 8). Applied on top of soft AGC at speaker.
 static int          g_call_vol = 8;
-// Last time we played peer audio — used for half-duplex UI / floor control
+// Last time we played peer audio - used for half-duplex UI / floor control
 static uint32_t     g_last_rx_play_ms = 0;
 static uint32_t     g_call_connected_ms = 0;
 // True from PTT release until final EOS packet is queued/sent
@@ -150,7 +150,7 @@ static volatile int    g_pending_len = 0;
 static volatile bool   g_pending_eos = false;
 static volatile bool   g_flush_req  = false;
 
-// ── Receive side ──────────────────────────────────────────────
+// -- Receive side ----------------------------------------------
 static constexpr int RX_QUEUE_DEPTH = 8;
 static constexpr int RX_PKT_MAX     = 180;
 
@@ -185,14 +185,14 @@ static void freeHdStack();
 // ============================================================
 
 static constexpr int VOICE_ACK_SLOTS      = 16;
-// SF8 / BW62.5 media ~122 B can take ~1–2 s airtime each; ACKs need a quiet RX
+// SF8 / BW62.5 media ~122 B can take ~1-2 s airtime each; ACKs need a quiet RX
 // window. Old 4 s timeout fired mid-PTT and RETX tags never matched ACKs.
 static constexpr uint32_t VOICE_ACK_TIMEOUT_MS = 12000;
 static constexpr int VOICE_MAX_RETX       = 1;   // one retx for media
 // Half-duplex: only 1 unacked media in flight so the radio can hear RESP ACKs.
 static constexpr int VOICE_MAX_INFLIGHT   = 1;
 static constexpr int JITTER_DEPTH         = 8;
-// Stop-and-wait media is 1 inflight — rarely have 2 packets buffered. Play ASAP.
+// Stop-and-wait media is 1 inflight - rarely have 2 packets buffered. Play ASAP.
 static constexpr int JITTER_PLAY_THRESH   = 1;
 static constexpr uint32_t JITTER_WAIT_MS  = 400;   // brief reordering window only
 static constexpr uint32_t JITTER_SKIP_MS  = 2500;  // skip hole if peer packet lost
@@ -295,7 +295,7 @@ static bool missedCallSendOnce(UITask& ui) {
 }
 
 // Match DeckHW::i2sTone exactly (pins/rate/format) so beeps and voice share
-// the same working speaker path. Codec2 PCM is often very quiet — we AGC it.
+// the same working speaker path. Codec2 PCM is often very quiet - we AGC it.
 static bool spk_i2s_start() {
   if (g_spk_started) return true;
 
@@ -319,7 +319,7 @@ static bool spk_i2s_start() {
 
   i2s_pin_config_t pins = {};
   pins.mck_io_num   = I2S_PIN_NO_CHANGE;
-  pins.bck_io_num   = TDECK_I2S_BCK;   // 7 — same as DeckHW.h
+  pins.bck_io_num   = TDECK_I2S_BCK;   // 7 - same as DeckHW.h
   pins.ws_io_num    = TDECK_I2S_WS;    // 5
   pins.data_out_num = TDECK_I2S_DOUT;  // 6
   pins.data_in_num  = I2S_PIN_NO_CHANGE;
@@ -328,7 +328,7 @@ static bool spk_i2s_start() {
 
   g_spk_started = true;
   Serial.println("[voice] speaker I2S started (DeckHW-compatible stereo 16k)");
-  // No test click — it was heard as a buzz/click every time I2S restarted
+  // No test click - it was heard as a buzz/click every time I2S restarted
   // between ~1 s LoRa voice packets.
   return true;
 }
@@ -363,7 +363,7 @@ static void spk_write_silence(int n_mono_samples) {
     int chunk = n_mono_samples - i;
     if (chunk > 64) chunk = 64;
     size_t wr = 0;
-    // Short timeout — if DMA is full we are ahead of the clock, fine
+    // Short timeout - if DMA is full we are ahead of the clock, fine
     i2s_write(I2S_NUM_0, (const char*)z,
               (size_t)chunk * 2 * sizeof(int16_t),
               &wr, pdMS_TO_TICKS(20));
@@ -371,7 +371,7 @@ static void spk_write_silence(int n_mono_samples) {
   }
 }
 
-// Expand mono → stereo. Soft AGC × call volume (1–10).
+// Expand mono -> stereo. Soft AGC x call volume (1-10).
 static void spk_write_mono(const int16_t* mono, int n_samples) {
   if (!g_spk_started || !mono || n_samples <= 0) return;
   // Half-duplex: never play peer while we are transmitting
@@ -391,10 +391,10 @@ static void spk_write_mono(const int16_t* mono, int n_samples) {
     // Near-silent: hold last gain (don't dive and then slam back up)
     target_q8 = agc_q8;
   }
-  // Very slow attack/release — packet gaps were AGC-pumping every ~1 s
+  // Very slow attack/release - packet gaps were AGC-pumping every ~1 s
   agc_q8 = (agc_q8 * 15 + target_q8) / 16;
 
-  // Call volume: 1=0.4× … 5=1.0× … 10=2.0× relative to AGC
+  // Call volume: 1=0.4x ... 5=1.0x ... 10=2.0x relative to AGC
   int vol = g_call_vol;
   if (vol < 1) vol = 1;
   if (vol > 10) vol = 10;
@@ -528,9 +528,9 @@ static bool rx_dequeue(RxVoicePkt& out) {
 
 // ============================================================
 // RX path (half-duplex):
-//   c2rx  — jitter only, small stack (~4–6 KB)
-//   c2dec — codec2_decode + speaker, large stack (~20–24 KB INTERNAL)
-//   c2work— encode while PTT; not concurrent with c2dec (share internal RAM)
+//   c2rx  - jitter only, small stack (~4-6 KB)
+//   c2dec - codec2_decode + speaker, large stack (~20-24 KB INTERNAL)
+//   c2work- encode while PTT; not concurrent with c2dec (share internal RAM)
 // Loop never runs codec2_decode (overflowed at 24 KB with UI overhead).
 // ============================================================
 
@@ -623,7 +623,7 @@ static void decPlayOne() {
     if (samples <= 0) continue;
     spk_write_mono(g_rx_pcm, samples);
     played += samples;
-    // Rare yield only — frequent vTaskDelay caused I2S underrun ticks mid-packet
+    // Rare yield only - frequent vTaskDelay caused I2S underrun ticks mid-packet
     if ((f & 15) == 15) vTaskDelay(1);
   }
 
@@ -634,7 +634,7 @@ static void decPlayOne() {
       UBaseType_t hwm = uxTaskGetStackHighWaterMark(nullptr);
       Serial.printf(
           "[voice] c2dec after 1st decode: stack_hwm=%u words (~%u B free) "
-          "— if <200 words, need bigger stack\n",
+          "- if <200 words, need bigger stack\n",
           (unsigned)hwm, (unsigned)(hwm * sizeof(StackType_t)));
     }
   }
@@ -645,7 +645,7 @@ static void decPlayOne() {
   }
 
   if (next.eos) {
-    // Drain a little silence then stop — end of talk burst only
+    // Drain a little silence then stop - end of talk burst only
     spk_write_silence(320);
     vTaskDelay(pdMS_TO_TICKS(40));
     spk_i2s_stop();
@@ -682,7 +682,7 @@ static void voiceDecTask(void* /*param*/) {
         } else {
           spk_i2s_stop();
           g_last_rx_play_ms = 0;
-          Serial.println("[voice] c2dec: long idle — speaker off");
+          Serial.println("[voice] c2dec: long idle - speaker off");
         }
       }
     }
@@ -704,7 +704,7 @@ static void voiceMem(const char* tag) {
   heap_caps_get_info(&is, MALLOC_CAP_SPIRAM);
 
   // FreeRTOS task stacks must be INTERNAL (not PSRAM).
-  // Half-duplex: one shared HD stack (~18–24 KB) for c2dec XOR c2work; c2rx ~3–4 KB.
+  // Half-duplex: one shared HD stack (~18-24 KB) for c2dec XOR c2work; c2rx ~3-4 KB.
   const size_t largest = ii.largest_free_block;
   const size_t budget  = largest;
   const uint32_t need_rx  = 3072;
@@ -825,7 +825,7 @@ static StackType_t* allocInternalStack(uint32_t bytes, const char* tag) {
 static void freeCodec2InitStack() {
   // NEVER free the stack under a live c2init task (causes canary/reboot).
   if (g_c2_task) {
-    Serial.println("[voice] freeCodec2InitStack: skip — c2init still running");
+    Serial.println("[voice] freeCodec2InitStack: skip - c2init still running");
     return;
   }
   if (g_c2_stack) {
@@ -839,7 +839,7 @@ static bool ensureRxWorker() {
 
   // Do not allocate / free stacks while codec2_create is using c2init stack
   if (g_c2_task) {
-    Serial.println("[voice] ensureRxWorker: defer — c2init still running");
+    Serial.println("[voice] ensureRxWorker: defer - c2init still running");
     return false;
   }
   if (g_c2_stack) {
@@ -848,13 +848,13 @@ static bool ensureRxWorker() {
   }
   // Grab large HD stack before small c2rx so we never fragment the big block
   if (g_call_state == CALL_CONNECTED && g_c2.ready() && !g_hd_stack) {
-    ensureHdStack();  // may recreate RX if it had to free it — re-check below
+    ensureHdStack();  // may recreate RX if it had to free it - re-check below
   }
   if (g_rx_task) return true;
   voiceMem("ensureRxWorker: before stack alloc (jitter-only c2rx)");
 
   size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-  size_t budget  = largest;  // jitter task is tiny — leave max free for c2dec later
+  size_t budget  = largest;  // jitter task is tiny - leave max free for c2dec later
 
   // Prefer small RX stacks so half-duplex turnaround can still fit c2dec
   const uint32_t candidates[] = { 4096, 3584, 3072 };
@@ -864,7 +864,7 @@ static bool ensureRxWorker() {
       budget, "voice-rx", &stack_bytes);
 
   if (!g_rx_stack) {
-    voiceMem("ensureRxWorker: FAILED — no internal stack for c2rx");
+    voiceMem("ensureRxWorker: FAILED - no internal stack for c2rx");
     return false;
   }
 
@@ -887,7 +887,7 @@ static bool ensureRxWorker() {
 static void stopRxWorker() {
   if (!g_rx_task && !g_rx_stack) return;
   Serial.println("[voice] stopRxWorker");
-  // RX task has no run flag — delete and free stack (jitter queue stays)
+  // RX task has no run flag - delete and free stack (jitter queue stays)
   if (g_rx_task) {
     vTaskDelete(g_rx_task);
     g_rx_task = nullptr;
@@ -899,18 +899,18 @@ static void stopRxWorker() {
 }
 
 // codec2_decode needs a large INTERNAL stack. 16 KB overflows (canary).
-// Shared HD pool: ~18 KB min; prefer ~20–24 KB. NEVER take the whole free
-// heap — I2S mic/spk DMA also needs contiguous INTERNAL (was 42 KB HD →
-// free_heap≈4 KB → i2s_alloc_dma_buffer failed, no TX audio).
+// Shared HD pool: ~18 KB min; prefer ~20-24 KB. NEVER take the whole free
+// heap - I2S mic/spk DMA also needs contiguous INTERNAL (was 42 KB HD ->
+// free_heap~4 KB -> i2s_alloc_dma_buffer failed, no TX audio).
 static constexpr uint32_t C2DEC_STACK_MIN  = 18432;  // 18 KB hard floor
 static constexpr uint32_t C2DEC_STACK_PREF = 20480;  // 20 KB is enough + leaves DMA room
 static constexpr uint32_t C2DEC_STACK_MAX  = 24576;  // hard cap; never larger
 static constexpr uint32_t C2TX_STACK_MIN   = 10240;
-// Leave room for I2S DMA (mic + spk ~8–16 KB) + small c2rx + heap slack
+// Leave room for I2S DMA (mic + spk ~8-16 KB) + small c2rx + heap slack
 static constexpr uint32_t INTERNAL_DMA_RESERVE = 16384;
 static uint32_t g_dec_fail_until_ms = 0;  // backoff so we don't thrash RX/dec
 
-// Stop decode task only — keep g_hd_stack for the rest of the call.
+// Stop decode task only - keep g_hd_stack for the rest of the call.
 static void stopDecWorker() {
   if (!g_dec_task) {
     g_dec_stack = nullptr;
@@ -927,7 +927,7 @@ static void stopDecWorker() {
   g_dec_stack = nullptr;  // alias only; g_hd_stack stays allocated
 }
 
-// Stop TX task only — keep g_hd_stack for reverse decode.
+// Stop TX task only - keep g_hd_stack for reverse decode.
 static void stopVoiceWorker() {
   if (!g_voice_task) {
     g_voice_stack = nullptr;
@@ -939,7 +939,7 @@ static void stopVoiceWorker() {
   }
   Serial.println("[voice] stopVoiceWorker (keep HD stack)");
   g_voice_worker_run = false;
-  // Do NOT clear g_ptt here — that was killing PTT when ensureDecWorker ran
+  // Do NOT clear g_ptt here - that was killing PTT when ensureDecWorker ran
   for (int i = 0; i < 50 && g_voice_task; i++)
     vTaskDelay(pdMS_TO_TICKS(10));
   if (g_voice_task) {
@@ -956,7 +956,7 @@ static void stopVoiceWorker() {
 static void freeHdStack() {
   // Must only run when neither TX nor decode task is using the buffer.
   if (g_dec_task || g_voice_task) {
-    Serial.println("[voice] freeHdStack: tasks still alive — stop first");
+    Serial.println("[voice] freeHdStack: tasks still alive - stop first");
     stopDecWorker();
     stopVoiceWorker();
   }
@@ -977,14 +977,14 @@ static bool ensureHdStack() {
   if (g_hd_stack && g_hd_stack_bytes >= C2DEC_STACK_MIN)
     return true;
 
-  // Wait for codec2 init — do not steal its stack or race heap under it
+  // Wait for codec2 init - do not steal its stack or race heap under it
   if (g_c2_task || (g_c2_init_req && !g_c2_init_done)) {
     Serial.println("[voice] ensureHdStack: defer until c2init finishes");
     return false;
   }
   freeCodec2InitStack();
 
-  // Temporarily drop small jitter task so its 3–4 KB can coalesce if adjacent.
+  // Temporarily drop small jitter task so its 3-4 KB can coalesce if adjacent.
   bool had_rx = (g_rx_task != nullptr || g_rx_stack != nullptr);
   if (had_rx) {
     Serial.println("[voice] ensureHdStack: free c2rx for contiguous RAM");
@@ -1013,7 +1013,7 @@ static bool ensureHdStack() {
 
   uint32_t candidates[8];
   int nc = 0;
-  // Fixed sizes only (descending). Do NOT floor(largest) — that ate 42 KB.
+  // Fixed sizes only (descending). Do NOT floor(largest) - that ate 42 KB.
   const uint32_t prefs[] = {
       C2DEC_STACK_MAX, C2DEC_STACK_PREF, 19456, 19200, C2DEC_STACK_MIN
   };
@@ -1129,11 +1129,11 @@ static bool ensureVoiceWorker() {
   voiceMem("ensureVoiceWorker: before HD reuse");
 
   if (!ensureHdStack()) {
-    voiceMem("ensureVoiceWorker: FAILED — no HD stack");
+    voiceMem("ensureVoiceWorker: FAILED - no HD stack");
     return false;
   }
   if (g_hd_stack_bytes < C2TX_STACK_MIN) {
-    voiceMem("ensureVoiceWorker: FAILED — HD stack too small for TX");
+    voiceMem("ensureVoiceWorker: FAILED - HD stack too small for TX");
     return false;
   }
 
@@ -1282,7 +1282,7 @@ static void voiceWorkerTask(void* /*param*/) {
       continue;
     }
 
-    // DC block + soft clip. Hardware PGA is already high; avoid extra ×gain
+    // DC block + soft clip. Hardware PGA is already high; avoid extra xgain
     // that clips and wrecks Codec2 (sounds like static).
     {
       static int32_t dc_acc = 0;
@@ -1364,7 +1364,7 @@ static bool es7210_probe() {
 // T-Deck / CYPHER-M8K ES7210 bring-up (ESP-ADF es7210.c + LilyGo Microphone.ino).
 //
 // Bug we hit: reg01=0x34 leaves ADC34 clocks gated off. ESP-ADF mic_select for
-// MIC3|MIC4 does update_reg_bit(CLOCK_OFF, mask=0x15, 0) — without that, MIC3/4
+// MIC3|MIC4 does update_reg_bit(CLOCK_OFF, mask=0x15, 0) - without that, MIC3/4
 // power/gain can look correct on I2C but SDOUT stays digital silence (peak=0).
 // Physical dual MEMS on T-Deck family need MIC3|MIC4 clocks + power.
 static bool es7210_config() {
@@ -1378,7 +1378,7 @@ static bool es7210_config() {
   es_w(0x40, 0x43);                             // analog / VMID
   es_w(0x41, 0x70); es_w(0x42, 0x70);           // MIC12 + MIC34 bias 2.87 V
   es_w(0x07, 0x20);                             // OSR
-  // 16 kHz @ MCLK=4.096 MHz (256×fs): coeff row {4096000,16000,...} → reg02=0xC1
+  // 16 kHz @ MCLK=4.096 MHz (256xfs): coeff row {4096000,16000,...} -> reg02=0xC1
   es_w(0x02, 0xC1);
   es_w(0x04, 0x01); es_w(0x05, 0x00);           // LRCK div
 
@@ -1387,8 +1387,8 @@ static bool es7210_config() {
   es_w(0x12, 0x00);
 
   // --- es7210_start + mic_select(MIC1|2|3|4) ---
-  // CLOCK_OFF: clear 0x0B (MIC12) and 0x15 (MIC34) from 0x3F → 0x20
-  // (0x34 left bit2+bit4 set → ADC34 stayed off → silence)
+  // CLOCK_OFF: clear 0x0B (MIC12) and 0x15 (MIC34) from 0x3F -> 0x20
+  // (0x34 left bit2+bit4 set -> ADC34 stayed off -> silence)
   es_w(0x01, 0x20);
   es_w(0x06, 0x00);                             // power-down off
   es_w(0x40, 0x43);
@@ -1399,7 +1399,7 @@ static bool es7210_config() {
   es_w(0x4B, 0xFF); es_w(0x4C, 0xFF);
   es_w(0x4B, 0x00);                             // MIC12 up
   es_w(0x4C, 0x00);                             // MIC34 up
-  // LilyGo: MIC1|2 @ 0 dB, MIC3|4 @ 37.5 dB (GAIN_37_5DB ≈ 0x0E)
+  // LilyGo: MIC1|2 @ 0 dB, MIC3|4 @ 37.5 dB (GAIN_37_5DB ~ 0x0E)
   es_w(0x43, 0x10);
   es_w(0x44, 0x10);
   es_w(0x45, 0x1E);
@@ -1414,13 +1414,13 @@ static bool es7210_config() {
       "[voice] ES7210 cfg @0x%02X reg01=0x%02X (want 0x20) reg45=0x%02X reg4C=0x%02X\n",
       g_es_addr, r01, r45, r4c);
   if (r01 != 0x20)
-    Serial.printf("[voice] WARN: reg01=0x%02X — ADC clocks may still be gated\n", r01);
+    Serial.printf("[voice] WARN: reg01=0x%02X - ADC clocks may still be gated\n", r01);
   return true;
 }
 
 // Mic I2S: true mono 16 kHz. ALL_LEFT on ESP32 legacy I2S still packs stereo
-// slots (L,L,L,L…) so a 640-sample read is only ~20 ms of real time while
-// Codec2 expects 40 ms → half-speed / garbled decode on the far end.
+// slots (L,L,L,L...) so a 640-sample read is only ~20 ms of real time while
+// Codec2 expects 40 ms -> half-speed / garbled decode on the far end.
 // ONLY_LEFT delivers one sample per period = correct 16 kHz mono.
 // Pins match LilyGo BOARD_ES7210_* (CYPHER-M8K same).
 static bool mic_i2s_start() {
@@ -1448,11 +1448,11 @@ static bool mic_i2s_start() {
   }
 
   i2s_pin_config_t pins = {};
-  pins.mck_io_num = ES_MCLK;   // 48 — BOARD_ES7210_MCLK
-  pins.bck_io_num = ES_SCK;    // 47 — BOARD_ES7210_SCK
-  pins.ws_io_num = ES_LRCK;    // 21 — BOARD_ES7210_LRCK
+  pins.mck_io_num = ES_MCLK;   // 48 - BOARD_ES7210_MCLK
+  pins.bck_io_num = ES_SCK;    // 47 - BOARD_ES7210_SCK
+  pins.ws_io_num = ES_LRCK;    // 21 - BOARD_ES7210_LRCK
   pins.data_out_num = I2S_PIN_NO_CHANGE;
-  pins.data_in_num = ES_DIN;   // 14 — BOARD_ES7210_DIN
+  pins.data_in_num = ES_DIN;   // 14 - BOARD_ES7210_DIN
   i2s_set_pin(I2S_NUM_1, &pins);
   i2s_zero_dma_buffer(I2S_NUM_1);
   Serial.println("[voice] mic I2S started (16k ONLY_LEFT mono, T-Deck/CYPHER-M8K)");
@@ -1461,7 +1461,7 @@ static bool mic_i2s_start() {
 
 static void mic_i2s_stop() { i2s_driver_uninstall(I2S_NUM_1); }
 
-// ── Control helpers ───────────────────────────────────────────
+// -- Control helpers -------------------------------------------
 
 bool VoiceScreen::sendVoiceControl(UITask& ui, const ContactInfo& to, uint8_t ctrl) {
   if (!ui.mesh) return false;
@@ -1524,7 +1524,7 @@ void VoiceScreen::endCall(UITask& ui, bool send_end) {
   Serial.println("[voice] call ended (cleanup done)");
 }
 
-// Private helpers (beta block only — non-beta stubs after #endif below)
+// Private helpers (beta block only - non-beta stubs after #endif below)
 bool VoiceScreen::startCodec2Init(const char* status_while) {
   if (g_c2.ready()) return true;
   if (g_c2_init_req) return true; // already spinning
@@ -1573,12 +1573,12 @@ void VoiceScreen::onConnectedMedia() {
   g_ptt = false;
   if (!g_c2.ready()) {
     startCodec2Init("Preparing audio...");
-    // tick1s: free c2init stack → HD → c2rx after init completes
+    // tick1s: free c2init stack -> HD -> c2rx after init completes
     return;
   }
   freeCodec2InitStack();  // safe: no live c2init task
   if (!ensureHdStack()) {
-    Serial.println("[voice] onConnected: HD stack delayed — will retry on media");
+    Serial.println("[voice] onConnected: HD stack delayed - will retry on media");
   }
   ensureRxWorker();
   strcpy(_status, "Listening - ENTER to talk");
@@ -1592,7 +1592,7 @@ void VoiceScreen::handleCallControl(UITask& ui, uint8_t ctrl,
 
   switch (ctrl) {
   case VOICE_CTRL_INVITE:
-    // Already busy with a call — BUSY the inviter (not our peer target)
+    // Already busy with a call - BUSY the inviter (not our peer target)
     if (g_call_state == CALL_CONNECTED || g_call_state == CALL_OUTGOING ||
         g_call_state == CALL_INCOMING) {
       if (from)
@@ -1617,12 +1617,12 @@ void VoiceScreen::handleCallControl(UITask& ui, uint8_t ctrl,
     if (!ui.hw.isDisplayOn()) ui.hw.displayOn();
     ui.hw.kickActivity();
     ui.hw.beep(1400, 80);
-    // Stay on current screen — UITask draws global Accept/Decline overlay
+    // Stay on current screen - UITask draws global Accept/Decline overlay
     ui.requestDraw();
     break;
 
   case VOICE_CTRL_ACCEPT:
-    // Idempotent: OUTGOING → CONNECTED; ignore if already connected
+    // Idempotent: OUTGOING -> CONNECTED; ignore if already connected
     Serial.printf("[voice] ACCEPT rx state=%d from=%s\n",
                   (int)g_call_state, from_name ? from_name : "?");
     if (g_call_state == CALL_OUTGOING) {
@@ -1641,9 +1641,9 @@ void VoiceScreen::handleCallControl(UITask& ui, uint8_t ctrl,
       ui.hw.beep(1800, 40);
       strcpy(_status, "Listening - ENTER to talk");
       ui.requestDraw();
-      Serial.println("[voice] remote ACCEPTED – media enabled");
+      Serial.println("[voice] remote ACCEPTED - media enabled");
     } else if (g_call_state == CALL_CONNECTED) {
-      // Peer retransmitting ACCEPT (or we already connected) — stop our retx
+      // Peer retransmitting ACCEPT (or we already connected) - stop our retx
       g_accept_retx = false;
       ui.requestDraw();
     } else {
@@ -1804,7 +1804,7 @@ void VoiceScreen::draw() {
     c.setCursor(left, y);
     c.print("SENDING");
   } else if (peerRecentlyTalking()) {
-    // Do not use g_spk_started — I2S can stay open briefly; HEARING is play-window only
+    // Do not use g_spk_started - I2S can stay open briefly; HEARING is play-window only
     c.setTextColor(C_GREEN);
     c.setCursor(left, y);
     c.print("HEARING");
@@ -1940,7 +1940,7 @@ bool VoiceScreen::key(uint8_t k) {
     return true;
   }
 
-  // ESC / N hang up (stay on screen with status — BACK leaves)
+  // ESC / N hang up (stay on screen with status - BACK leaves)
   if ((k == 0x1B || k == 'n' || k == 'N') &&
       (g_call_state == CALL_OUTGOING || g_call_state == CALL_CONNECTED)) {
     if (g_ptt) {
@@ -1954,7 +1954,7 @@ bool VoiceScreen::key(uint8_t k) {
     return true;
   }
 
-  // Main ENTER / Space / T — PTT toggle
+  // Main ENTER / Space / T - PTT toggle
   if (k == 0x0D || k == ' ' || k == 't' || k == 'T') {
     if (g_call_state == CALL_INCOMING) return true;
 
@@ -2008,7 +2008,7 @@ bool VoiceScreen::key(uint8_t k) {
           }
         }
 
-        // Half-duplex: seize floor — stop speaker/decode immediately
+        // Half-duplex: seize floor - stop speaker/decode immediately
         stopDecWorker();
         spk_i2s_stop();
         g_last_rx_play_ms = 0;
@@ -2032,7 +2032,7 @@ bool VoiceScreen::key(uint8_t k) {
         ui.hw.beep(1400, 25);
       } else {
         // Release floor: stop capture, flush remaining frames as EOS packet
-        Serial.println("[voice] PTT OFF → buffer & send");
+        Serial.println("[voice] PTT OFF -> buffer & send");
         g_ptt = false;
         g_tx_finishing = true;
         g_flush_req = true;
@@ -2149,7 +2149,7 @@ void VoiceScreen::tick1s() {
 
   checkVoiceAcks();
 
-  // Only arm "missed" if a talk burst fully failed (0 acks) — not after good calls
+  // Only arm "missed" if a talk burst fully failed (0 acks) - not after good calls
   if (!g_ptt && !g_tx_finishing && g_pending_len == 0 &&
       g_packets_sent > 0 && g_packets_acked == 0 && !g_missed_pending &&
       g_call_state == CALL_CONNECTED) {
@@ -2172,7 +2172,7 @@ void VoiceScreen::tick1s() {
 #endif
 }
 
-// ── Call lifecycle (Contacts → Call... / global ring UI) ──
+// -- Call lifecycle (Contacts -> Call... / global ring UI) --
 void VoiceScreen::prepareOutbound(const ContactInfo& to) {
 #ifdef MESHDECK_BETA
   g_target = to;
@@ -2217,7 +2217,7 @@ bool VoiceScreen::beginOutboundInvite() {
       return false;
     }
   }
-  // INVITE is 2 bytes – no Codec2 / workers / DMA yet
+  // INVITE is 2 bytes - no Codec2 / workers / DMA yet
   if (!sendVoiceControl(ui, g_target, VOICE_CTRL_INVITE)) {
     strcpy(_status, "Invite failed");
     return false;
@@ -2228,7 +2228,7 @@ bool VoiceScreen::beginOutboundInvite() {
   memset(g_voice_acks, 0, sizeof(g_voice_acks));
   snprintf(_status, sizeof(_status), "Calling %s...", g_target.name);
   ui.hw.beep(1200, 30);
-  Serial.println("[voice] INVITE sent – waiting for ACCEPT");
+  Serial.println("[voice] INVITE sent - waiting for ACCEPT");
   return true;
 #else
   strcpy(_status, "beta build only");
@@ -2258,7 +2258,7 @@ void VoiceScreen::acceptInbound() {
 
   g_incoming = false;
   if (!g_has_target) {
-    Serial.println("[voice] ACCEPT not sent — no target contact!");
+    Serial.println("[voice] ACCEPT not sent - no target contact!");
     strcpy(_status, "Accept failed (no contact)");
     ui.requestDraw();
     return;
@@ -2272,7 +2272,7 @@ void VoiceScreen::acceptInbound() {
     }
   }
 
-  // Send ACCEPT, space on air, then again. Do NOT start Codec2 yet — heavy
+  // Send ACCEPT, space on air, then again. Do NOT start Codec2 yet - heavy
   // init can starve the radio TX queue right when the caller needs this packet.
   bool ok1 = sendVoiceControl(ui, g_target, VOICE_CTRL_ACCEPT);
   vTaskDelay(pdMS_TO_TICKS(200));
@@ -2393,9 +2393,9 @@ void VoiceScreen::pushRxVoice(const uint8_t* data, size_t len, bool eos,
   }
 
   // Media while we are still RINGING: peer accepted / is talking but ACCEPT
-  // control was lost — complete the handshake so we leave RING.
+  // control was lost - complete the handshake so we leave RING.
   if (g_call_state == CALL_OUTGOING) {
-    Serial.println("[voice] media while OUTGOING — treating as ACCEPT");
+    Serial.println("[voice] media while OUTGOING - treating as ACCEPT");
     handleCallControl(ui, VOICE_CTRL_ACCEPT, who, snr, from);
   }
 
@@ -2410,17 +2410,17 @@ void VoiceScreen::pushRxVoice(const uint8_t* data, size_t len, bool eos,
     return;
   }
 
-  // Hearing peer media means the handshake completed both ways — stop ACCEPT retx
+  // Hearing peer media means the handshake completed both ways - stop ACCEPT retx
   g_accept_retx = false;
 
   if (!ensureRxWorker()) {
-    Serial.printf("[voice] RX worker unavailable – drop len=%u from=%s\n",
+    Serial.printf("[voice] RX worker unavailable - drop len=%u from=%s\n",
                   (unsigned)len, who);
     return;
   }
 
   if (!rx_enqueue(data, len, eos, true, who)) {
-    Serial.printf("[voice] RX queue full – drop len=%u from=%s\n",
+    Serial.printf("[voice] RX queue full - drop len=%u from=%s\n",
                   (unsigned)len, who);
     return;
   }
@@ -2454,7 +2454,7 @@ void VoiceScreen::onPacketAcked(uint32_t tag, bool eos) {
     VoiceAckSlot& s = g_voice_acks[i];
     if (s.tag != tag) continue;
 
-    // Late ACK after we already timed out — still count delivery
+    // Late ACK after we already timed out - still count delivery
     if (s.acked) return;
     if (s.timed_out) {
       s.timed_out = false;
@@ -2473,7 +2473,7 @@ void VoiceScreen::onPacketAcked(uint32_t tag, bool eos) {
     }
     return;
   }
-  // Control INVITE/ACCEPT also get mesh ACKs but never register slots — quiet.
+  // Control INVITE/ACCEPT also get mesh ACKs but never register slots - quiet.
   Serial.printf("[voice] ACK untracked tag=%u (ctrl or recycled slot)\n", tag);
 }
 
@@ -2492,7 +2492,7 @@ void VoiceScreen::checkVoiceAcks() {
       continue;
     }
 
-    // One retx — MeshCore assigns a *new* tag; must store it or ACK never matches
+    // One retx - MeshCore assigns a *new* tag; must store it or ACK never matches
     if (s.retx < VOICE_MAX_RETX && ui.mesh && g_has_target) {
       s.data[0] |= VOICE_FLAG_RETX;
       s.retx++;
@@ -2547,9 +2547,9 @@ void VoiceScreen::pollPTT() {
 
   bool eos = g_pending_eos;
 
-  // Codec payload cap: req = 4 + n must be ≤ 168 → n ≤ 164 (see Codec2Engine)
+  // Codec payload cap: req = 4 + n must be <= 168 -> n <= 164 (see Codec2Engine)
   uint8_t framed[182];
-  if (n > 162) n = 162;  // 27×6 max theoretical; engine uses 24×6=144
+  if (n > 162) n = 162;  // 27x6 max theoretical; engine uses 24x6=144
   framed[0] = eos ? VOICE_FLAG_EOS : 0x00;
   framed[1] = g_tx_seq++;
   memcpy(framed + 2, g_pending_pkt, n);
@@ -2598,7 +2598,7 @@ void VoiceScreen::pollPTT() {
   }
 }
 
-// Light kick from the UI loop — real decode is on c2dec.
+// Light kick from the UI loop - real decode is on c2dec.
 // Never start c2dec while TX holds the floor.
 void VoiceScreen::pollRxPlayback() {
   if (g_call_state != CALL_CONNECTED || g_ptt || g_tx_finishing) return;

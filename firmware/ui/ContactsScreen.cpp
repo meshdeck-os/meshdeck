@@ -13,7 +13,7 @@ static const char* ACTIONS[] = {
 };
 // indices: 0 Message, 1 Call, 2 Show path, 3 Trace, 4 Reset, 5 Share, 6 Remove
 #else
-// No Call... on stable — voice is beta-only
+// No Call... on stable - voice is beta-only
 static const char* ACTIONS[] = {
   "Message", "Show path", "Trace route", "Reset path", "Share (0-hop)", "Remove"
 };
@@ -218,7 +218,7 @@ void ContactsScreen::action(int which) {
       break;
     }
 #ifdef MESHDECK_BETA
-    case 1: {  // Call... (beta: max 1 hop — direct or via one repeater)
+    case 1: {  // Call... (beta: max 1 hop - direct or via one repeater)
       ContactInfo* live = ui.mesh->lookupContactByPubKey(ct.id.pub_key, 6);
       if (!live) {
         ui.toast("Contact not found", C_RED);
@@ -312,7 +312,7 @@ bool ContactsScreen::key(uint8_t k) {
     return false;
   }
 
-  if (k == 0x0D) {                 // Enter → action menu
+  if (k == 0x0D) {                 // Enter -> action menu
     if (_fn) _menu = 0;
     return true;
   }
@@ -323,7 +323,7 @@ bool ContactsScreen::key(uint8_t k) {
       rebuildFilter();
       return true;
     }
-    return false;                  // empty filter → back
+    return false;                  // empty filter -> back
   }
   if (k == 0x1B) {                 // Esc clears filter
     if (_flen) {
@@ -344,7 +344,7 @@ bool ContactsScreen::key(uint8_t k) {
   if (k == 't' && _flen == 0) { action(2); return true; }  // Trace
 #endif
 
-  // Printable → filter text
+  // Printable -> filter text
   if (k >= 32 && k < 127 && _flen < (int)sizeof(_filter) - 1) {
     _filter[_flen++] = (char)k;
     _filter[_flen] = 0;

@@ -226,11 +226,25 @@ public:
   bool sendChannel(uint8_t channel_idx, const char* text);
   void openThread(int thread_idx);                                // jumps to chat screen
 
-  // channels
-  int  channelCount();
-  bool channelNameAt(int idx, char* out, size_t sz);
+  // channels (mesh slot indices; empty slots have blank name + zero secret)
+  int  channelCount();                                            // occupied slots only
+  int  channelSlotAt(int list_idx);                               // list row -> mesh index (-1)
+  bool channelNameAt(int mesh_idx, char* out, size_t sz);
+  bool channelKeyBase64(int mesh_idx, char* out, size_t sz);      // 16- or 32-byte secret as b64
+  bool channelKeyHex(int mesh_idx, char* out, size_t sz);         // secret as lowercase hex
+  // Official: meshcore://channel/add?name=...&secret=<hex>
+  bool channelShareUrl(int mesh_idx, char* out, size_t sz);
+  bool channelIsPublic(int mesh_idx);                             // default MeshCore Public PSK
+  int  findChannelBySecret(const uint8_t* secret, int seclen);    // mesh idx or -1
   void openChannel(int channel_idx);                              // open that channel's chat thread
-  bool addChannelNamed(const char* name, const char* psk_base64); // join/create by name + key
+  // psk_base64 empty: hashtag (#name -> sha256) or random private key.
+  // Returns mesh slot index, or -1 on failure.
+  int addChannelNamed(const char* name, const char* psk_base64);
+  // Join from official share (raw secret bytes). -1 fail; existing slot if already joined.
+  int addChannelFromSecret(const char* name, const uint8_t* secret, int seclen);
+  bool renameChannel(int mesh_idx, const char* name);
+  bool rekeyChannel(int mesh_idx, const char* psk_base64);        // empty = new random key
+  bool removeChannel(int mesh_idx);                               // clear slot (companion-compatible)
   void openQR(const char* url);
   int  pendingThread() const { return _pending_thread; }
   void clearPendingThread() { _pending_thread = -1; }
@@ -255,13 +269,13 @@ public:
 
   // trace / voice (contact-oriented actions)
   bool startTrace(const ContactInfo& target);
-  bool startVoiceCall(const ContactInfo& to);   // Contacts → Call... (beta PTT)
+  bool startVoiceCall(const ContactInfo& to);   // Contacts -> Call... (beta PTT)
   TraceResult trace;
 
   // repeater console (CLI responses from repeaters)
   // Local/system line for the open repeater console (from usually ">")
   void repLog(const char* from, const char* text);
-  // Remote room/repeater line — only appears if console is open for that peer
+  // Remote room/repeater line - only appears if console is open for that peer
   void repLogFrom(const ContactInfo& from, const char* text);
 
   // status helpers
@@ -372,7 +386,7 @@ private:
   HeardEntry _heard[HEARD_MAX];
   int _heard_count = 0, _heard_head = 0;
 
-  // recent full contacts seen via advert (so Last Heard → Save works with auto-add off)
+  // recent full contacts seen via advert (so Last Heard -> Save works with auto-add off)
   static const int RECENT_CONTACTS = 16;
   ContactInfo _recent_ct[RECENT_CONTACTS];
   int _recent_ct_count = 0;
@@ -416,12 +430,12 @@ private:
 };
 
 // text helpers (implemented in UITask.cpp, used by screens)
-// Adafruit GFX default font is 7-bit ASCII only — never pass UTF-8 / fancy punctuation
+// Adafruit GFX default font is 7-bit ASCII only - never pass UTF-8 / fancy punctuation
 // to print()/printf or you get garbage glyphs.
 int drawRichText(GFXcanvas16& cv, int x, int y, int max_w, const char* text,
                  uint16_t color, int text_size);   // returns height used; handles wrap + emoji
 int measureRichTextHeight(GFXcanvas16& cv, int max_w, const char* text, int text_size);
-// Copy src → dst, keep printable ASCII (0x20-0x7E), replace others with '?', then ellipsize.
+// Copy src -> dst, keep printable ASCII (0x20-0x7E), replace others with '?', then ellipsize.
 void ellipsize(char* dst, size_t dst_sz, const char* src);
-// In-place: keep only printable ASCII; multi-byte UTF-8 → single '?'.
+// In-place: keep only printable ASCII; multi-byte UTF-8 -> single '?'.
 void sanitizeAscii(char* s);

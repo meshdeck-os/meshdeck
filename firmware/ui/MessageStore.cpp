@@ -153,7 +153,7 @@ void MessageStore::markRead(DeckThread* t) {
 }
 
 void MessageStore::clearAll() {
-  // Full wipe – removes the tabs themselves, not just the messages
+  // Full wipe - removes the tabs themselves, not just the messages
   for (int i = 0; i < _num; i++) {
     if (_threads[i].msgs) {
       // free the ring if your allocator needs it (optional)

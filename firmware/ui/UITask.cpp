@@ -3,9 +3,12 @@
 #include "AllScreens.h"
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/AdvertDataHelpers.h>
+#include <helpers/ChannelDetails.h>
+#include <Utils.h>
 #include <SPIFFS.h>
 #include <RTClib.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 #include <stdarg.h>
 #include <math.h>
 #include <WiFi.h>
@@ -21,7 +24,7 @@
 #define ROOM_CRED_MAGIC 0x524D4331u  // "RMC1"
 
 // ---------------------------------------------------------------- text utils
-// Built-in GFX font: glyphs for 0x20..0x7E only. UTF-8 / · / – / … print as junk.
+// Built-in GFX font: glyphs for 0x20..0x7E only. UTF-8 / * / - / ... print as junk.
 
 void sanitizeAscii(char* s) {
   if (!s) return;
@@ -31,16 +34,21 @@ void sanitizeAscii(char* s) {
     unsigned char c = *r++;
     if (c >= 0x20 && c <= 0x7E) {
       *w++ = (char)c;
-    } else if (c >= 0xC0) {
-      // Skip rest of UTF-8 sequence, emit one '?'
-      if ((c & 0xE0) == 0xC0) { if (*r) r++; }
-      else if ((c & 0xF0) == 0xE0) { if (*r) r++; if (*r) r++; }
-      else if ((c & 0xF8) == 0xF0) { if (*r) r++; if (*r) r++; if (*r) r++; }
-      *w++ = '?';
     } else if (c == '\n' || c == '\t') {
       *w++ = ' ';
+    } else if (c >= 0xC2 && c <= 0xF4) {
+      // Valid UTF-8 lead: skip continuation bytes, one '?' per codepoint
+      int extra = 1;
+      if ((c & 0xF0) == 0xE0) extra = 2;
+      else if ((c & 0xF8) == 0xF0) extra = 3;
+      else if ((c & 0xE0) != 0xC0) extra = 0;  // invalid lead (C0/C1 overlong)
+      while (extra-- > 0 && (*r & 0xC0) == 0x80) r++;
+      *w++ = '?';
+    } else if (c >= 0x80) {
+      // Latin-1 / lone continuation / other high bytes -> '?' (never drop)
+      *w++ = '?';
     }
-    // drop other controls
+    // drop other controls (0x00-0x1F except \n\t already handled)
   }
   *w = 0;
 }
@@ -55,13 +63,17 @@ void ellipsize(char* dst, size_t dst_sz, const char* src) {
     unsigned char c = *r++;
     if (c >= 0x20 && c <= 0x7E) {
       dst[wi++] = (char)c;
-    } else if (c >= 0xC0) {
-      if ((c & 0xE0) == 0xC0) { if (*r) r++; }
-      else if ((c & 0xF0) == 0xE0) { if (*r) r++; if (*r) r++; }
-      else if ((c & 0xF8) == 0xF0) { if (*r) r++; if (*r) r++; if (*r) r++; }
-      if (wi + 1 < dst_sz) dst[wi++] = '?';
     } else if (c == '\n' || c == '\t') {
       if (wi + 1 < dst_sz) dst[wi++] = ' ';
+    } else if (c >= 0xC2 && c <= 0xF4) {
+      int extra = 1;
+      if ((c & 0xF0) == 0xE0) extra = 2;
+      else if ((c & 0xF8) == 0xF0) extra = 3;
+      else if ((c & 0xE0) != 0xC0) extra = 0;
+      while (extra-- > 0 && (*r & 0xC0) == 0x80) r++;
+      if (wi + 1 < dst_sz) dst[wi++] = '?';
+    } else if (c >= 0x80) {
+      if (wi + 1 < dst_sz) dst[wi++] = '?';
     }
   }
   dst[wi] = 0;
@@ -333,7 +345,7 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
 
   termLog(C_TERM_SYS, "MeshDeck v%s on MeshCore %s", MESHDECK_VERSION, FIRMWARE_VERSION);
 #ifdef MESHDECK_BETA
-  termLog(C_TERM_SYS, "beta build: Codec2 voice (LGPL-2.1) — see THIRD_PARTY.md");
+  termLog(C_TERM_SYS, "beta build: Codec2 voice (LGPL-2.1) - see THIRD_PARTY.md");
 #endif
   // NOTE: format the floats separately - StrHelper::ftoa returns a shared static
   // buffer, so calling it twice in one printf would print the same value twice.
@@ -380,12 +392,7 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
     termLog(C_TERM_SYS, "sd card: no NewMaps .mdv packs in /meshdeck-maps");
   }
 
-  // Speaker hardware self-test (after display/I2C/settings are up).
-  // Hardcoded multi-tone jingle — not Codec2, not LoRa. If you hear this,
-  // the amp + I2S pins work; voice silence is then encode/path, not the speaker.
-  termLog(C_TERM_SYS, "audio self-test...");
-  hw.playStartupSelfTest();
-  termLog(C_TERM_SYS, "audio self-test done (5 tones)");
+  // No startup tones - boot stays quiet. Message/error/UI beeps honor Settings -> Sound.
 }
 
 void UITask::reloadSDMaps() {
@@ -488,40 +495,460 @@ void UITask::openThread(int thread_idx) {
 }
 
 // ---- channels ----
+// Occupied = non-empty name or non-zero secret (companion delete clears both).
+static bool channelSlotOccupied(const ChannelDetails& ch) {
+  if (ch.name[0]) return true;
+  for (int i = 0; i < (int)sizeof(ch.channel.secret); i++)
+    if (ch.channel.secret[i]) return true;
+  return false;
+}
+
+static int secretByteLen(const ChannelDetails& ch) {
+  // 256-bit if any of the upper 16 bytes are set; else 128-bit (or empty)
+  bool upper = false;
+  for (int i = 16; i < 32; i++) if (ch.channel.secret[i]) { upper = true; break; }
+  if (upper) return 32;
+  for (int i = 0; i < 16; i++) if (ch.channel.secret[i]) return 16;
+  return 0;
+}
+
+// Known MeshCore public group PSK (base64 of 16 bytes) - same as MyMesh boot seed
+static const char* kPublicGroupPskB64 = "izOH6cXN6mrJ5e26oRXNcg==";
+
+// Local base64 (avoid including base64.hpp here - its bodies live in the header
+// and would clash with BaseChatMesh's translation unit at link time).
+static int b64Val(char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+') return 62;
+  if (c == '/') return 63;
+  return -1;
+}
+
+static int encodeB64(const uint8_t* in, int in_len, char* out, int out_cap) {
+  static const char* T =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  int oi = 0;
+  for (int i = 0; i < in_len; i += 3) {
+    int rem = in_len - i;
+    uint32_t v = ((uint32_t)in[i]) << 16;
+    if (rem > 1) v |= ((uint32_t)in[i + 1]) << 8;
+    if (rem > 2) v |= (uint32_t)in[i + 2];
+    if (oi + 4 >= out_cap) return -1;
+    out[oi++] = T[(v >> 18) & 63];
+    out[oi++] = T[(v >> 12) & 63];
+    out[oi++] = (rem > 1) ? T[(v >> 6) & 63] : '=';
+    out[oi++] = (rem > 2) ? T[v & 63] : '=';
+  }
+  out[oi] = 0;
+  return oi;
+}
+
+static int decodeB64(const char* in, uint8_t* out, int out_max) {
+  int oi = 0;
+  int val = 0, valb = -8;
+  for (const char* p = in; *p; p++) {
+    if (*p == '=' || *p == ' ' || *p == '\n' || *p == '\t') {
+      if (*p == '=') break;
+      continue;
+    }
+    int d = b64Val(*p);
+    if (d < 0) return -1;
+    val = (val << 6) | d;
+    valb += 6;
+    if (valb >= 0) {
+      if (oi >= out_max) return -1;
+      out[oi++] = (uint8_t)((val >> valb) & 0xFF);
+      valb -= 8;
+    }
+  }
+  return oi;
+}
+
+static bool decodeChannelPsk(const char* psk_base64, uint8_t* secret_out, int& seclen_out) {
+  char psk[68];
+  StrHelper::strncpy(psk, psk_base64 ? psk_base64 : "", sizeof(psk));
+  // strip whitespace
+  int w = 0;
+  for (int r = 0; psk[r]; r++)
+    if (psk[r] != ' ' && psk[r] != '\n' && psk[r] != '\t') psk[w++] = psk[r];
+  psk[w] = 0;
+  if (!psk[0]) return false;
+  // pad to multiple of 4 (T-Deck keyboard can't type '=')
+  while ((w % 4) != 0 && w < (int)sizeof(psk) - 1) psk[w++] = '=';
+  psk[w] = 0;
+  memset(secret_out, 0, 32);
+  int len = decodeB64(psk, secret_out, 32);
+  if (len != 16 && len != 32) return false;
+  seclen_out = len;
+  return true;
+}
+
+static void hashtagSecret(const char* name, uint8_t secret16[16]) {
+  char tag[40];
+  if (name && name[0] == '#')
+    StrHelper::strncpy(tag, name, sizeof(tag));
+  else
+    snprintf(tag, sizeof(tag), "#%s", name && name[0] ? name : "channel");
+  uint8_t hash[32];
+  mesh::Utils::sha256(hash, sizeof(hash), (const uint8_t*)tag, (int)strlen(tag));
+  memcpy(secret16, hash, 16);
+}
+
+static void randomSecret16(uint8_t secret16[16]) {
+  esp_fill_random(secret16, 16);
+}
+
+static void syncChannelThreadTitle(MessageStore& store, int mesh_idx, const char* name) {
+  for (int i = 0; i < store.numThreads(); i++) {
+    DeckThread* t = store.thread(i);
+    if (t && t->kind == TK_CHANNEL && t->channel_idx == (uint8_t)mesh_idx) {
+      StrHelper::strncpy(t->title, name && name[0] ? name : "?", sizeof(t->title));
+    }
+  }
+}
+
 int UITask::channelCount() {
   if (!mesh) return 0;
   int n = 0;
   ChannelDetails ch;
-  while (n < MAX_GROUP_CHANNELS && mesh->getChannel(n, ch)) n++;
+  for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+    if (!mesh->getChannel(i, ch)) break;
+    if (channelSlotOccupied(ch)) n++;
+  }
   return n;
 }
 
-bool UITask::channelNameAt(int idx, char* out, size_t sz) {
+int UITask::channelSlotAt(int list_idx) {
+  if (!mesh || list_idx < 0) return -1;
   ChannelDetails ch;
-  if (!mesh || !mesh->getChannel(idx, ch)) return false;
-  StrHelper::strncpy(out, ch.name, sz);
+  int seen = 0;
+  for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+    if (!mesh->getChannel(i, ch)) break;
+    if (!channelSlotOccupied(ch)) continue;
+    if (seen == list_idx) return i;
+    seen++;
+  }
+  return -1;
+}
+
+bool UITask::channelNameAt(int mesh_idx, char* out, size_t sz) {
+  ChannelDetails ch;
+  if (!mesh || !mesh->getChannel(mesh_idx, ch) || !channelSlotOccupied(ch)) return false;
+  if (ch.name[0]) StrHelper::strncpy(out, ch.name, sz);
+  else StrHelper::strncpy(out, "(unnamed)", sz);
   return true;
+}
+
+bool UITask::channelKeyBase64(int mesh_idx, char* out, size_t sz) {
+  ChannelDetails ch;
+  if (!out || sz < 8 || !mesh || !mesh->getChannel(mesh_idx, ch)) return false;
+  int seclen = secretByteLen(ch);
+  if (seclen <= 0) {
+    out[0] = 0;
+    return false;
+  }
+  // 32 bytes -> 44 b64 chars + NUL; 16 -> 24 + NUL
+  return encodeB64(ch.channel.secret, seclen, out, (int)sz) > 0;
+}
+
+bool UITask::channelKeyHex(int mesh_idx, char* out, size_t sz) {
+  ChannelDetails ch;
+  if (!out || !mesh || !mesh->getChannel(mesh_idx, ch)) return false;
+  int seclen = secretByteLen(ch);
+  if (seclen <= 0 || sz < (size_t)(seclen * 2 + 1)) {
+    if (out && sz) out[0] = 0;
+    return false;
+  }
+  static const char* H = "0123456789abcdef";
+  for (int i = 0; i < seclen; i++) {
+    out[i * 2]     = H[(ch.channel.secret[i] >> 4) & 0xF];
+    out[i * 2 + 1] = H[ch.channel.secret[i] & 0xF];
+  }
+  out[seclen * 2] = 0;
+  return true;
+}
+
+static int urlEncodeComponent(const char* in, char* out, int out_cap) {
+  static const char* H = "0123456789ABCDEF";
+  int oi = 0;
+  for (const unsigned char* p = (const unsigned char*)in; *p; p++) {
+    unsigned char c = *p;
+    bool safe = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+    if (safe) {
+      if (oi + 1 >= out_cap) return -1;
+      out[oi++] = (char)c;
+    } else if (c == ' ') {
+      if (oi + 1 >= out_cap) return -1;
+      out[oi++] = '+';
+    } else {
+      if (oi + 3 >= out_cap) return -1;
+      out[oi++] = '%';
+      out[oi++] = H[c >> 4];
+      out[oi++] = H[c & 0xF];
+    }
+  }
+  if (oi >= out_cap) return -1;
+  out[oi] = 0;
+  return oi;
+}
+
+bool UITask::channelShareUrl(int mesh_idx, char* out, size_t sz) {
+  // meshcore://channel/add?name=<enc>&secret=<hex>
+  if (!out || sz < 48) return false;
+  char nm[32], hex[68], enc[96];
+  if (!channelNameAt(mesh_idx, nm, sizeof(nm))) return false;
+  if (!channelKeyHex(mesh_idx, hex, sizeof(hex))) return false;
+  if (urlEncodeComponent(nm, enc, sizeof(enc)) < 0) return false;
+  int n = snprintf(out, sz, "meshcore://channel/add?name=%s&secret=%s", enc, hex);
+  return n > 0 && (size_t)n < sz;
+}
+
+int UITask::findChannelBySecret(const uint8_t* secret, int seclen) {
+  if (!mesh || !secret || (seclen != 16 && seclen != 32)) return -1;
+  ChannelDetails ch;
+  for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+    if (!mesh->getChannel(i, ch)) break;
+    if (!channelSlotOccupied(ch)) continue;
+    int have = secretByteLen(ch);
+    if (have != seclen) continue;
+    if (memcmp(ch.channel.secret, secret, seclen) == 0) return i;
+  }
+  return -1;
+}
+
+bool UITask::channelIsPublic(int mesh_idx) {
+  char b64[48];
+  if (!channelKeyBase64(mesh_idx, b64, sizeof(b64))) return false;
+  return strcmp(b64, kPublicGroupPskB64) == 0;
 }
 
 void UITask::openChannel(int channel_idx) {
   ChannelDetails ch;
-  if (!mesh || !mesh->getChannel(channel_idx, ch)) { toast("No such channel", C_RED); return; }
-  DeckThread* t = store.forChannel((uint8_t)channel_idx, ch.name);
+  if (!mesh || !mesh->getChannel(channel_idx, ch) || !channelSlotOccupied(ch)) {
+    toast("No such channel", C_RED);
+    return;
+  }
+  DeckThread* t = store.forChannel((uint8_t)channel_idx, ch.name[0] ? ch.name : "channel");
   if (t) openThread(store.indexOf(t));
 }
 
-bool UITask::addChannelNamed(const char* name, const char* psk_base64) {
-  if (!mesh) return false;
-  // pad base64 to a multiple of 4 with '=' (the keyboard can't type '=')
-  char psk[68];
-  StrHelper::strncpy(psk, psk_base64, sizeof(psk));
-  int n = strlen(psk);
-  while ((n % 4) != 0 && n < (int)sizeof(psk) - 1) psk[n++] = '=';
-  psk[n] = 0;
-  ChannelDetails* c = mesh->addChannel(name[0] ? name : "channel", psk);
-  if (!c) { toast("Channel add failed (full?)", C_RED); return false; }
+int UITask::addChannelNamed(const char* name, const char* psk_base64) {
+  if (!mesh) return -1;
+
+  char nm[32];
+  {
+    const char* p = name ? name : "";
+    while (*p == ' ') p++;
+    StrHelper::strncpy(nm, p, sizeof(nm));
+    // trim trailing space
+    int L = (int)strlen(nm);
+    while (L > 0 && nm[L - 1] == ' ') nm[--L] = 0;
+  }
+  if (!nm[0]) {
+    toast("Name required", C_YELLOW);
+    return -1;
+  }
+
+  // Free slot (empty name + zero secret) - matches companion protocol lifecycle
+  int free_idx = -1;
+  ChannelDetails probe;
+  for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+    if (!mesh->getChannel(i, probe)) break;
+    if (!channelSlotOccupied(probe)) { free_idx = i; break; }
+  }
+  if (free_idx < 0) {
+    toast("Channel list full", C_RED);
+    return -1;
+  }
+
+  uint8_t secret[32];
+  memset(secret, 0, sizeof(secret));
+  int seclen = 0;
+  const char* how = "joined";
+
+  if (psk_base64 && psk_base64[0]) {
+    if (!decodeChannelPsk(psk_base64, secret, seclen)) {
+      toast("Bad key (need base64 16/32B)", C_RED);
+      return -1;
+    }
+  } else if (nm[0] == '#') {
+    // Hashtag channel: secret = first 16 bytes of sha256("#name")
+    hashtagSecret(nm, secret);
+    seclen = 16;
+    how = "hashtag";
+  } else {
+    // Private channel with fresh random key
+    randomSecret16(secret);
+    seclen = 16;
+    how = "private";
+  }
+
+  ChannelDetails ch;
+  memset(&ch, 0, sizeof(ch));
+  StrHelper::strncpy(ch.name, nm, sizeof(ch.name));
+  memcpy(ch.channel.secret, secret, seclen);
+  if (!mesh->setChannel(free_idx, ch)) {
+    toast("Channel add failed", C_RED);
+    return -1;
+  }
   mesh->saveChannels();
-  toast("Channel added", C_GREEN);
+
+  char msg[48];
+  if (strcmp(how, "private") == 0)
+    snprintf(msg, sizeof(msg), "Added #%s (new key)", nm);
+  else if (strcmp(how, "hashtag") == 0)
+    snprintf(msg, sizeof(msg), "Joined %s", nm);
+  else
+    snprintf(msg, sizeof(msg), "Added #%s", nm);
+  toast(msg, C_GREEN);
+  termLog(C_TERM_SYS, "channel + slot=%d name=%s (%s)", free_idx, nm, how);
+  return free_idx;
+}
+
+int UITask::addChannelFromSecret(const char* name, const uint8_t* secret, int seclen) {
+  if (!mesh || !secret || (seclen != 16 && seclen != 32)) return -1;
+
+  int existing = findChannelBySecret(secret, seclen);
+  if (existing >= 0) {
+    toast("Already on channel", C_YELLOW);
+    return existing;
+  }
+
+  char nm[32];
+  {
+    const char* p = name ? name : "";
+    while (*p == ' ') p++;
+    StrHelper::strncpy(nm, p, sizeof(nm));
+    int L = (int)strlen(nm);
+    while (L > 0 && nm[L - 1] == ' ') nm[--L] = 0;
+  }
+  if (!nm[0]) strcpy(nm, "channel");
+
+  int free_idx = -1;
+  ChannelDetails probe;
+  for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+    if (!mesh->getChannel(i, probe)) break;
+    if (!channelSlotOccupied(probe)) { free_idx = i; break; }
+  }
+  if (free_idx < 0) {
+    toast("Channel list full", C_RED);
+    return -1;
+  }
+
+  ChannelDetails ch;
+  memset(&ch, 0, sizeof(ch));
+  StrHelper::strncpy(ch.name, nm, sizeof(ch.name));
+  memcpy(ch.channel.secret, secret, seclen);
+  if (!mesh->setChannel(free_idx, ch)) {
+    toast("Channel add failed", C_RED);
+    return -1;
+  }
+  mesh->saveChannels();
+  char msg[48];
+  snprintf(msg, sizeof(msg), "Joined #%s", nm);
+  toast(msg, C_GREEN);
+  termLog(C_TERM_SYS, "channel join slot=%d name=%s (share)", free_idx, nm);
+  return free_idx;
+}
+
+bool UITask::renameChannel(int mesh_idx, const char* name) {
+  if (!mesh) return false;
+  ChannelDetails ch;
+  if (!mesh->getChannel(mesh_idx, ch) || !channelSlotOccupied(ch)) {
+    toast("No such channel", C_RED);
+    return false;
+  }
+  const char* p = name ? name : "";
+  while (*p == ' ') p++;
+  if (!*p) {
+    toast("Name required", C_YELLOW);
+    return false;
+  }
+  StrHelper::strncpy(ch.name, p, sizeof(ch.name));
+  // trim trailing
+  int L = (int)strlen(ch.name);
+  while (L > 0 && ch.name[L - 1] == ' ') ch.name[--L] = 0;
+  if (!mesh->setChannel(mesh_idx, ch)) {
+    toast("Rename failed", C_RED);
+    return false;
+  }
+  mesh->saveChannels();
+  syncChannelThreadTitle(store, mesh_idx, ch.name);
+  store.save();
+  toast("Channel renamed", C_GREEN);
+  return true;
+}
+
+bool UITask::rekeyChannel(int mesh_idx, const char* psk_base64) {
+  if (!mesh) return false;
+  ChannelDetails ch;
+  if (!mesh->getChannel(mesh_idx, ch) || !channelSlotOccupied(ch)) {
+    toast("No such channel", C_RED);
+    return false;
+  }
+  if (channelIsPublic(mesh_idx)) {
+    toast("Can't rekey Public", C_YELLOW);
+    return false;
+  }
+
+  uint8_t secret[32];
+  memset(secret, 0, sizeof(secret));
+  int seclen = 0;
+  if (psk_base64 && psk_base64[0]) {
+    if (!decodeChannelPsk(psk_base64, secret, seclen)) {
+      toast("Bad key (need base64 16/32B)", C_RED);
+      return false;
+    }
+  } else {
+    randomSecret16(secret);
+    seclen = 16;
+  }
+  memset(ch.channel.secret, 0, sizeof(ch.channel.secret));
+  memcpy(ch.channel.secret, secret, seclen);
+  if (!mesh->setChannel(mesh_idx, ch)) {
+    toast("Rekey failed", C_RED);
+    return false;
+  }
+  mesh->saveChannels();
+  toast(psk_base64 && psk_base64[0] ? "Key updated" : "New random key set", C_GREEN);
+  termLog(C_TERM_SYS, "channel rekey slot=%d name=%s", mesh_idx, ch.name);
+  return true;
+}
+
+bool UITask::removeChannel(int mesh_idx) {
+  if (!mesh) return false;
+  ChannelDetails ch;
+  if (!mesh->getChannel(mesh_idx, ch) || !channelSlotOccupied(ch)) {
+    toast("No such channel", C_RED);
+    return false;
+  }
+  if (channelIsPublic(mesh_idx)) {
+    toast("Can't remove Public", C_YELLOW);
+    return false;
+  }
+  // Companion delete: empty name + all-zero secret
+  ChannelDetails empty;
+  memset(&empty, 0, sizeof(empty));
+  if (!mesh->setChannel(mesh_idx, empty)) {
+    toast("Remove failed", C_RED);
+    return false;
+  }
+  mesh->saveChannels();
+  // Leave chat history; mark title so it's obvious the slot is gone
+  for (int i = 0; i < store.numThreads(); i++) {
+    DeckThread* t = store.thread(i);
+    if (t && t->kind == TK_CHANNEL && t->channel_idx == (uint8_t)mesh_idx) {
+      char gone[28];
+      snprintf(gone, sizeof(gone), "~%s", ch.name[0] ? ch.name : "channel");
+      StrHelper::strncpy(t->title, gone, sizeof(t->title));
+    }
+  }
+  store.save();
+  toast("Channel removed", C_YELLOW);
+  termLog(C_TERM_SYS, "channel - slot=%d was=%s", mesh_idx, ch.name);
   return true;
 }
 
@@ -538,67 +965,77 @@ void UITask::notify(UIEventType t) {
 
 
 void UITask::reresolveThreadSenders(DeckThread* t) {
-  if (!t || !mesh || t->kind != TK_CONTACT) return;
+  if (!t) return;
 
+  bool changed = false;
   for (int i = 0; i < t->count; i++) {
     DeckMsg* m = store.msgAt(t, i);
     if (!m || !m->sender[0]) continue;
 
-    // Already looks like a real name? skip
-    // Hex fallback from our room code is exactly 8 hex chars
-    bool is_hex_id = (strlen(m->sender) == 8);
-    if (is_hex_id) {
-      for (int k = 0; k < 8; k++) {
-        char c = m->sender[k];
-        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) {
-          is_hex_id = false;
-          break;
-        }
-      }
-    }
-
-    bool is_room_name = (strcmp(m->sender, t->title) == 0);
-
-    if (!is_hex_id && !is_room_name) continue;
-
-    // Try to resolve
-    ContactInfo* author = nullptr;
-
-    if (is_hex_id) {
-      uint8_t prefix[4];
-      auto hex = [](char c) -> uint8_t {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        return 0;
-      };
-      for (int b = 0; b < 4; b++) {
-        prefix[b] = (hex(m->sender[b * 2]) << 4) | hex(m->sender[b * 2 + 1]);
-      }
-
-      author = mesh->lookupContactByPubKey(prefix, 4);
-      if (!author) {
-        int n = mesh->getNumContacts();
-        for (int ci = 0; ci < n; ci++) {
-          ContactInfo ct;
-          if (mesh->getContactByIdx(ci, ct) &&
-              memcmp(ct.id.pub_key, prefix, 4) == 0) {
-            static ContactInfo found;
-            found = ct;
-            author = &found;
+    // Room threads: try to replace hex / room-title placeholders with contact names
+    if (mesh && t->kind == TK_CONTACT) {
+      // Hex fallback from our room code is exactly 8 hex chars
+      bool is_hex_id = (strlen(m->sender) == 8);
+      if (is_hex_id) {
+        for (int k = 0; k < 8; k++) {
+          char c = m->sender[k];
+          if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) {
+            is_hex_id = false;
             break;
           }
         }
       }
+
+      bool is_room_name = (strcmp(m->sender, t->title) == 0);
+
+      if (is_hex_id || is_room_name) {
+        ContactInfo* author = nullptr;
+
+        if (is_hex_id) {
+          uint8_t prefix[4];
+          auto hex = [](char c) -> uint8_t {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            return 0;
+          };
+          for (int b = 0; b < 4; b++) {
+            prefix[b] = (hex(m->sender[b * 2]) << 4) | hex(m->sender[b * 2 + 1]);
+          }
+
+          author = mesh->lookupContactByPubKey(prefix, 4);
+          if (!author) {
+            int n = mesh->getNumContacts();
+            for (int ci = 0; ci < n; ci++) {
+              ContactInfo ct;
+              if (mesh->getContactByIdx(ci, ct) &&
+                  memcmp(ct.id.pub_key, prefix, 4) == 0) {
+                static ContactInfo found;
+                found = ct;
+                author = &found;
+                break;
+              }
+            }
+          }
+        }
+
+        if (author && author->name[0]) {
+          StrHelper::strncpy(m->sender, author->name, sizeof(m->sender));
+          changed = true;
+        }
+      }
     }
 
-    if (author && author->name[0]) {
-      StrHelper::strncpy(m->sender, author->name, sizeof(m->sender));
-    }
+    // Always scrub for GFX: contact/channel nicknames often contain UTF-8
+    // (accents, fancy punctuation) that the T-Deck font cannot draw.
+    char before[MD_SENDER_LEN];
+    StrHelper::strncpy(before, m->sender, sizeof(before));
+    sanitizeAscii(m->sender);
+    if (strcmp(before, m->sender) != 0) changed = true;
   }
 
-  // Persist so the fix survives reboot
-  store.save();
+  // Persist when we fixed names so reboot stays clean
+  if (changed) store.save();
 }
 
 void UITask::onVoiceRecv(const mesh::GroupChannel& channel,
@@ -618,7 +1055,7 @@ void UITask::onVoiceRecv(const mesh::GroupChannel& channel,
     }
   }
 
-  // Live voice stays on the call UI only — do not spam chat with "voice 0.9s".
+  // Live voice stays on the call UI only - do not spam chat with "voice 0.9s".
   VoiceScreen* vs = static_cast<VoiceScreen*>(_screens[SCR_VOICE]);
   if (vs) vs->pushRxVoice(voice_data, len, end_of_stream, name, snr, nullptr);
 
@@ -650,7 +1087,7 @@ void UITask::onVoiceRecvFromContact(const ContactInfo& from,
   (void)from; (void)voice_data; (void)len; (void)end_of_stream; (void)snr;
   return;  // call signaling + media are beta-only
 #else
-  // Control frames (flags bit7) are signaling only — no beep.
+  // Control frames (flags bit7) are signaling only - no beep.
   // INVITE rings once inside VoiceScreen::handleCallControl.
   // Live call media is never written to chat (was "voice 0.9s" spam each burst).
   const bool is_ctrl = (len >= 1 && (voice_data[0] & 0x80) != 0);
@@ -698,7 +1135,7 @@ void UITask::onContactMsg(const ContactInfo& from, const char* text, uint32_t se
       StrHelper::strncpy(sender, author->name, sizeof(sender));
       got_name = true;
     } else {
-      // Unknown author – show short id instead of the room name
+      // Unknown author - show short id instead of the room name
       snprintf(sender, sizeof(sender), "%02X%02X%02X%02X",
                sender_prefix[0], sender_prefix[1],
                sender_prefix[2], sender_prefix[3]);
@@ -757,7 +1194,7 @@ void UITask::onContactMsg(const ContactInfo& from, const char* text, uint32_t se
   sanitizeAscii(sender_clean);
   sanitizeAscii(body_clean);
   if (!body_clean[0] && body && body[0]) {
-    // Sanitize wiped body — keep a placeholder so the post is still visible
+    // Sanitize wiped body - keep a placeholder so the post is still visible
     StrHelper::strncpy(body_clean, "(message)", sizeof(body_clean));
   }
 
@@ -766,7 +1203,7 @@ void UITask::onContactMsg(const ContactInfo& from, const char* text, uint32_t se
   if (t) {
     store.addMsg(t, sender_clean, body_clean, ts, 0, (int8_t)(snr * 4), path_len, 0);
   } else {
-    termLog(C_TERM_ERR, "store full — dropped msg from %s", from.name);
+    termLog(C_TERM_ERR, "store full - dropped msg from %s", from.name);
   }
 
   // Room/repeater: show backlog in console; establish session if missing.
@@ -848,7 +1285,7 @@ void UITask::onChannelMsg(uint8_t channel_idx, const char* channel_name, const c
   uint32_t now = epochNow();
   uint32_t msg_ts = ts;
   if (msg_ts < 1000000000UL || msg_ts > now + 3600UL) {
-    msg_ts = now;   // not a sane unix epoch → use receive time
+    msg_ts = now;   // not a sane unix epoch -> use receive time
   }
 
   termLog(C_TERM_SYS,
@@ -861,9 +1298,17 @@ void UITask::onChannelMsg(uint8_t channel_idx, const char* channel_name, const c
           snr,
           sender);
 
+  // GFX font is ASCII-only; channel nicks often have UTF-8 accents/emoji
+  sanitizeAscii(sender);
+  char body_clean[MD_TEXT_LEN];
+  StrHelper::strncpy(body_clean, body ? body : "", sizeof(body_clean));
+  sanitizeAscii(body_clean);
+  if (!body_clean[0] && body && body[0])
+    StrHelper::strncpy(body_clean, "(message)", sizeof(body_clean));
+
   DeckThread* t = store.forChannel(channel_idx, channel_name);
   if (t) {
-    store.addMsg(t, sender, body, msg_ts, 0, (int8_t)(snr * 4), path_len, 0);
+    store.addMsg(t, sender, body_clean, msg_ts, 0, (int8_t)(snr * 4), path_len, 0);
   }
 
   termLog(C_TERM_RX, "[#%s] %s", channel_name, text);
@@ -1005,8 +1450,11 @@ bool UITask::sendDM(const uint8_t* pub_prefix, const char* text) {
     return false;
   }
   mesh->registerExpectedAck(expected_ack, c);
+  char me[MD_SENDER_LEN];
+  StrHelper::strncpy(me, prefs->node_name, sizeof(me));
+  sanitizeAscii(me);
   DeckThread* t = store.forContact(c->id.pub_key, c->name);
-  if (t) store.addMsg(t, prefs->node_name, text, epochNow(), MF_OUT,
+  if (t) store.addMsg(t, me, text, epochNow(), MF_OUT,
                       0, res == MSG_SEND_SENT_FLOOD ? 0xFF : c->out_path_len, expected_ack);
   termLog(C_TERM_TX, "[DM->%s] %s", c->name, text);
   return true;
@@ -1020,8 +1468,11 @@ bool UITask::sendChannel(uint8_t channel_idx, const char* text) {
     hw.chimeError();
     return false;
   }
+  char me[MD_SENDER_LEN];
+  StrHelper::strncpy(me, prefs->node_name, sizeof(me));
+  sanitizeAscii(me);
   DeckThread* t = store.forChannel(channel_idx, ch.name);
-  if (t) store.addMsg(t, prefs->node_name, text, epochNow(), MF_OUT | MF_DELIVERED, 0, 0, 0);
+  if (t) store.addMsg(t, me, text, epochNow(), MF_OUT | MF_DELIVERED, 0, 0, 0);
   termLog(C_TERM_TX, "[#%s] %s: %s", ch.name, prefs->node_name, text);
   return true;
 }
@@ -1073,7 +1524,7 @@ bool UITask::startVoiceCall(const ContactInfo& to) {
   {
     uint8_t hops = MyMesh::voiceHopCount(live.out_path_len);
     if (hops == 0xFF)
-      termLog(C_TERM_SYS, "voice call %s: no path → zero-hop direct", live.name);
+      termLog(C_TERM_SYS, "voice call %s: no path -> zero-hop direct", live.name);
     else
       termLog(C_TERM_SYS, "voice call %s: %u hop path", live.name, (unsigned)hops);
   }
@@ -1088,7 +1539,7 @@ bool UITask::startVoiceCall(const ContactInfo& to) {
 }
 
 void UITask::repLog(const char* from, const char* text) {
-  // Local/system console line (e.g. ">") — shown on the open console only
+  // Local/system console line (e.g. ">") - shown on the open console only
   char fbuf[32], tbuf[72];
   StrHelper::strncpy(fbuf, from ? from : "?", sizeof(fbuf));
   StrHelper::strncpy(tbuf, text ? text : "", sizeof(tbuf));
@@ -1190,7 +1641,7 @@ void UITask::fmtContactPath(char* out, size_t sz, const ContactInfo& ct) const {
     snprintf(out, sz, "flood (no path)");
     return;
   }
-  // path_len packs hop count (low 6 bits) and hash size (high 2 bits: 0→1B, 1→2B, 2→3B)
+  // path_len packs hop count (low 6 bits) and hash size (high 2 bits: 0->1B, 1->2B, 2->3B)
   uint8_t hops = (uint8_t)(ct.out_path_len & 63);
   uint8_t hsz  = (uint8_t)((ct.out_path_len >> 6) + 1);
   if (hsz > 3) hsz = 1;
@@ -1758,15 +2209,15 @@ uint8_t UITask::autoLoginMaxTries() const {
 bool UITask::roomNeedsAutoLogin(int idx) const {
   if (idx < 0 || idx >= _room_cred_n) return false;
   const RoomCred& e = _room_creds[idx];
-  // Auto-login is for rooms only — never boot-login repeaters
+  // Auto-login is for rooms only - never boot-login repeaters
   if (e.type != ADV_TYPE_ROOM) return false;
-  // auto_login alone is enough — blank passwords are valid for some rooms
+  // auto_login alone is enough - blank passwords are valid for some rooms
   if (!e.auto_login) return false;
   if (_room_session_ok[idx]) return false;
   if (_room_auto_tries[idx] >= autoLoginMaxTries()) return false;
   if (!mesh) return false;
   ContactInfo* live = mesh->lookupContactByPubKey(e.pub_prefix, 6);
-  // Contact not in book yet — still "needs" auto-login when it appears
+  // Contact not in book yet - still "needs" auto-login when it appears
   if (!live) return true;
   // Live type wins if contact book disagrees with saved cred
   if (live->type != ADV_TYPE_ROOM) return false;
@@ -1812,7 +2263,7 @@ void UITask::beginRoomSync(const uint8_t* prefix6) {
   _room_sync[idx].login_ms = millis();
   _room_sync[idx].last_rx_ms = millis();  // require quiet after login too
   _room_sync[idx].active = true;
-  termLog(C_TERM_SYS, "room sync started (backlog) — wait before posting");
+  termLog(C_TERM_SYS, "room sync started (backlog) - wait before posting");
   toast("Syncing room backlog...", C_CYAN);
   _dirty = true;
 }
@@ -1830,7 +2281,7 @@ void UITask::endRoomSync(const uint8_t* prefix6, const char* why) {
   _room_sync[idx].active = false;
   termLog(C_TERM_SYS, "room sync done%s%s",
           why ? ": " : "", why ? why : "");
-  toast("Room ready — you can post", C_GREEN);
+  toast("Room ready - you can post", C_GREEN);
   _dirty = true;
 }
 
@@ -2014,7 +2465,7 @@ bool UITask::beginRoomLogin(const ContactInfo& c, const char* password,
                             bool auto_login_if_ok, bool force, bool from_auto) {
   if (!mesh || !password) return false;
 
-  // Already keep-alive connected — treat as success so UI leaves password screen
+  // Already keep-alive connected - treat as success so UI leaves password screen
   // (unless force=true for resync)
   if (!force && mesh->isLoggedInto(c.id.pub_key)) {
     markRoomSessionOk(c.id.pub_key);
@@ -2054,7 +2505,7 @@ bool UITask::beginRoomLogin(const ContactInfo& c, const char* password,
       _auto_login_at = 0;
     }
   } else if (mesh->hasPendingLogin()) {
-    // UI cleared but mesh still waiting — same rules
+    // UI cleared but mesh still waiting - same rules
     if (from_auto) {
       termLog(C_TERM_SYS, "auto-login skip %s (mesh pending_login set)", c.name);
       return false;
@@ -2084,7 +2535,7 @@ bool UITask::beginRoomLogin(const ContactInfo& c, const char* password,
   char msg[48];
   snprintf(msg, sizeof(msg), "Logging in to %s...", c.name);
   toast(msg, C_CYAN);
-  // Passwords are per-node (keyed by pub prefix) — log which target + length only
+  // Passwords are per-node (keyed by pub prefix) - log which target + length only
   termLog(C_TERM_TX, "[login->%s] type=%u pwd_len=%u auto_try=%d",
           c.name, (unsigned)c.type, (unsigned)strlen(password), from_auto ? 1 : 0);
   // Only appear on this peer's open console (not another room/repeater console)
@@ -2124,13 +2575,13 @@ void UITask::tryAutoLoginRooms() {
             (unsigned)strlen(_room_creds[i].password));
     if (beginRoomLogin(*live, _room_creds[i].password, true,
                        false /* force */, true /* from_auto */)) {
-      // If already connected, beginRoomLogin returns true without pending —
+      // If already connected, beginRoomLogin returns true without pending -
       // don't leave a dead retry schedule for this room
       if (mesh->isLoggedInto(live->id.pub_key)) {
         _room_session_ok[i] = 1;
       }
     } else {
-      // Send failed / busy — leave try counted; schedule another room later
+      // Send failed / busy - leave try counted; schedule another room later
       _auto_login_at = millis() + 2500;
     }
     return;
@@ -2169,7 +2620,7 @@ void UITask::onLoginResult(const ContactInfo& from, bool ok) {
 
   if (ok) {
     // Always persist credentials on successful pending login (blank pwd OK).
-    // saveRoomCred keys by this contact's pub prefix — never overwrites another node.
+    // saveRoomCred keys by this contact's pub prefix - never overwrites another node.
     if (match) {
       saveRoomCred(from, _login_pending_pwd, _login_pending_auto);
     }
@@ -2182,7 +2633,7 @@ void UITask::onLoginResult(const ContactInfo& from, bool ok) {
     char msg[48];
     snprintf(msg, sizeof(msg), "Logged in: %s", from.name);
     toast(msg, C_GREEN);
-    // Room servers push backlog stop-and-wait — block TX until quiet
+    // Room servers push backlog stop-and-wait - block TX until quiet
     if (from.type == ADV_TYPE_ROOM)
       beginRoomSync(from.id.pub_key);
   } else {

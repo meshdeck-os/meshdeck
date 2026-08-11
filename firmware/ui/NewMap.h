@@ -1,6 +1,6 @@
 #pragma once
 /*
- * MeshDeck NewMaps — multi-layer vector basemap packs (.mdv).
+ * MeshDeck NewMaps - multi-layer vector basemap packs (.mdv).
  *
  * Built offline from OpenStreetMap (see tools/gen_newmap.py).
  * Drop .mdv files into /meshdeck-maps/ on the SD card.
@@ -67,7 +67,7 @@ struct NewMapLabel {
   int32_t lat_s;
   int32_t lon_s;
   uint8_t kind;         // 0=city 1=town 2=village 3=hamlet 4=suburb
-  uint8_t min_scale_div; // min_scale stored as scale/4 (0..255 → 0..1020)
+  uint8_t min_scale_div; // min_scale stored as scale/4 (0..255 -> 0..1020)
   char    name[20];
 } __attribute__((packed));
 

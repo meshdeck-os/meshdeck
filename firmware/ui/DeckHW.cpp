@@ -287,6 +287,7 @@ bool DeckHW::readTouch(TouchEvent& ev) {
       _t_start_x = _tx = sx; _t_start_y = _ty = sy;
       _t_start_ms = millis();
       _t_moved = false;
+      _t_long_fired = false;
       // Raw + mapped coords for touch calibration (visible in the USB serial log).
       // raw = straight off the GT911; map<n>-> = after the selected transform.
       Serial.printf("touch raw=%d,%d  map%d-> %d,%d\n", rx, ry, _touch_map, sx, sy);
@@ -300,12 +301,19 @@ bool DeckHW::readTouch(TouchEvent& ev) {
       ev.x = sx; ev.y = sy; ev.dx = dx; ev.dy = dy;
       return true;
     }
+    // Hold still ~0.55s -> LONG (once per press); lift will not also TAP
+    if (!_t_long_fired && !_t_moved && (millis() - _t_start_ms) >= 550) {
+      _t_long_fired = true;
+      ev.kind = TouchEvent::LONG;
+      ev.x = _tx; ev.y = _ty; ev.dx = 0; ev.dy = 0;
+      return true;
+    }
     return false;
   }
 
   if (_touching && fresh) {   // finger lifted
     _touching = false;
-    if (!_t_moved && millis() - _t_start_ms < 600) {
+    if (!_t_moved && !_t_long_fired && millis() - _t_start_ms < 600) {
       ev.kind = TouchEvent::TAP;
       ev.x = _tx; ev.y = _ty; ev.dx = 0; ev.dy = 0;
     } else {
@@ -313,6 +321,7 @@ bool DeckHW::readTouch(TouchEvent& ev) {
       ev.x = _tx; ev.y = _ty;
       ev.dx = _tx - _t_start_x; ev.dy = _ty - _t_start_y;
     }
+    _t_long_fired = false;
     return true;
   }
   return false;
@@ -360,41 +369,20 @@ void DeckHW::i2sTone(uint16_t freq, uint16_t ms) {
   i2s_driver_uninstall(I2S_NUM_0);
 }
 
+// All UI tones go through i2sTone(), which no-ops when Sound is off or volume is 0.
 void DeckHW::beep(uint16_t f, uint16_t ms) { i2sTone(f, ms); }
-void DeckHW::chimeMessage() { i2sTone(1319, 60); i2sTone(1760, 90); }
-void DeckHW::chimeBoot()    { i2sTone(880, 70); i2sTone(1109, 70); i2sTone(1319, 110); }
-void DeckHW::chimeError()   { i2sTone(220, 120); }
-
-// Hard-coded “snippet”: three rising tones + a short square-wave chirp.
-// Same I2S path as UI beeps (16 kHz stereo square waves on TDECK_I2S_*).
-// Use this to prove the speaker works independent of Codec2 / LoRa.
-bool DeckHW::playStartupSelfTest() {
-  bool was_on = _snd_on;
-  uint8_t was_vol = _snd_vol;
-  _snd_on = true;
-  if (_snd_vol < 7) _snd_vol = 9;  // force audible level for the test
-
-  Serial.printf("[audio] startup speaker self-test (vol=%u) …\n", (unsigned)_snd_vol);
-
-  // Melody: C5 – E5 – G5 – C6 (hardcoded, not a .wav file)
-  i2sTone(523, 140);
-  delay(30);
-  i2sTone(659, 140);
-  delay(30);
-  i2sTone(784, 160);
-  delay(30);
-  i2sTone(1047, 220);
-  delay(40);
-  // Descending confirmation blip
-  i2sTone(880, 80);
-  delay(20);
-  i2sTone(660, 100);
-
-  Serial.println("[audio] startup self-test done — you should have heard 5 tones");
-
-  _snd_on = was_on;
-  _snd_vol = was_vol;
-  return true;
+void DeckHW::chimeMessage() {
+  if (!_snd_on || _snd_vol == 0) return;
+  i2sTone(1319, 60);
+  i2sTone(1760, 90);
+}
+void DeckHW::chimeBoot() {
+  // Kept for API compatibility; boot is intentionally silent.
+  (void)0;
+}
+void DeckHW::chimeError() {
+  if (!_snd_on || _snd_vol == 0) return;
+  i2sTone(220, 120);
 }
 
 // ---------------- SD card ----------------

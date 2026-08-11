@@ -3,6 +3,7 @@
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/AdvertDataHelpers.h>
 #include <helpers/ContactInfo.h>
+#include <Utils.h>
 #include <ctype.h>
 
 #define TAB_H      16
@@ -20,8 +21,8 @@ static const char* CANNED[] = {
 
 // MeshCore apps share contacts in chat as:
 //   <publickeyhex:type:Name>
-// or with spaces: <hex… :1:NOBBY-KM7GYW>
-// Also support: meshcore://contact/add?name=…&public_key=…&type=…
+// or with spaces: <hex... :1:NOBBY-KM7GYW>
+// Also support: meshcore://contact/add?name=...&public_key=...&type=...
 struct ParsedContactShare {
   uint8_t pub[32];
   int     pub_bytes;   // 6..32
@@ -202,13 +203,99 @@ static bool findContactShare(const char* text, ParsedContactShare& out) {
   return false;
 }
 
-static bool messageHasContactShare(const char* text) {
-  ParsedContactShare tmp;
-  return findContactShare(text, tmp);
+// Official: meshcore://channel/add?name=...&secret=<hex>
+struct ParsedChannelShare {
+  uint8_t secret[32];
+  int     seclen;   // 16 or 32
+  char    name[32];
+  bool    ok;
+};
+
+static bool parseUrlChannelShare(const char* text, ParsedChannelShare& out) {
+  out.ok = false;
+  out.seclen = 0;
+  out.name[0] = 0;
+  memset(out.secret, 0, sizeof(out.secret));
+  if (!text) return false;
+
+  const char* u = strstr(text, "meshcore://channel/add?");
+  if (!u) return false;
+  u = strchr(u, '?');
+  if (!u) return false;
+  u++;
+
+  char sec_hex[80] = {0};
+  char name_enc[64] = {0};
+
+  const char* p = u;
+  while (*p && *p != ' ' && *p != '\n') {
+    const char* amp = strchr(p, '&');
+    const char* end = amp ? amp : p + strlen(p);
+    for (const char* s = p; s < end; s++)
+      if (*s == ' ' || *s == '\n') { end = s; break; }
+
+    if (strncmp(p, "secret=", 7) == 0) {
+      int n = (int)(end - (p + 7));
+      if (n > 0 && n < (int)sizeof(sec_hex)) {
+        memcpy(sec_hex, p + 7, n);
+        sec_hex[n] = 0;
+      }
+    } else if (strncmp(p, "name=", 5) == 0) {
+      int n = (int)(end - (p + 5));
+      if (n > 0 && n < (int)sizeof(name_enc)) {
+        memcpy(name_enc, p + 5, n);
+        name_enc[n] = 0;
+      }
+    }
+    // region_scope ignored (optional app-side)
+    if (!amp) break;
+    p = amp + 1;
+  }
+
+  // secret is hex (32 chars = 16 bytes, or 64 = 32 bytes); strip non-hex
+  char hex_clean[80];
+  int hi = 0;
+  for (int i = 0; sec_hex[i] && hi < (int)sizeof(hex_clean) - 1; i++) {
+    if (isHex(sec_hex[i])) hex_clean[hi++] = sec_hex[i];
+  }
+  hex_clean[hi] = 0;
+  int nbytes = parseHexBytes(hex_clean, hi, out.secret, 32);
+  if (nbytes != 16 && nbytes != 32) return false;
+  out.seclen = nbytes;
+
+  // URL-decode name
+  int oi = 0;
+  for (int i = 0; name_enc[i] && oi < (int)sizeof(out.name) - 1; i++) {
+    if (name_enc[i] == '+') out.name[oi++] = ' ';
+    else if (name_enc[i] == '%' && isHex(name_enc[i + 1]) && isHex(name_enc[i + 2])) {
+      out.name[oi++] = (char)((hexNibble(name_enc[i + 1]) << 4) | hexNibble(name_enc[i + 2]));
+      i += 2;
+    } else out.name[oi++] = name_enc[i];
+  }
+  out.name[oi] = 0;
+  if (!out.name[0]) strcpy(out.name, "channel");
+  for (int i = 0; out.name[i]; i++) {
+    if ((unsigned char)out.name[i] < 32 || (unsigned char)out.name[i] > 126)
+      out.name[i] = '?';
+  }
+  out.ok = true;
+  return true;
+}
+
+static bool findChannelShare(const char* text, ParsedChannelShare& out) {
+  return parseUrlChannelShare(text, out);
+}
+
+static bool messageHasShare(const char* text) {
+  ParsedContactShare ct;
+  if (findContactShare(text, ct)) return true;
+  ParsedChannelShare ch;
+  return findChannelShare(text, ch);
 }
 
 void ChatScreen::enter() {
-  _add_dlg = false;
+  _add_dlg = SHARE_NONE;
+  closeOverlays();
   // make sure the Public channel thread exists
   ChannelDetails ch;
   if (ui.mesh && ui.mesh->getChannel(0, ch)) {
@@ -227,11 +314,284 @@ void ChatScreen::enter() {
   }
   if (_tab >= _norder) _tab = 0;
   _scroll = 0;
+  // Scrub UTF-8 nicks + re-resolve hex ids across all threads (not only active tab)
+  for (int i = 0; i < ui.store.numThreads(); i++)
+    ui.reresolveThreadSenders(ui.store.thread(i));
   DeckThread* t = cur();
-  if (t) {
-    ui.store.markRead(t);
-    ui.reresolveThreadSenders(t);   // <-- add this
+  if (t) ui.store.markRead(t);
+}
+
+void ChatScreen::closeOverlays() {
+  _overlay = OV_NONE;
+  _canned = -1;
+  _act_sel = 0;
+  _nactions = 0;
+  _cn = 0;
+  _csel = 0;
+  _ctop = 0;
+}
+
+void ChatScreen::openActions() {
+  _canned = -1;
+  _add_dlg = SHARE_NONE;
+  _overlay = OV_ACTIONS;
+  _act_sel = 0;
+  // Base actions + optional Share channel
+  DeckThread* t = cur();
+  _nactions = 3;  // Share contact, Quick messages, Jump to latest
+  if (t && t->kind == TK_CHANNEL) _nactions = 4;
+}
+
+// Action indices depend on whether Share channel is present:
+//   always: 0 Share contact, 1 Quick messages, last Jump to latest
+//   channel: 2 Share this channel, 3 Jump
+//   non-channel: 2 Jump
+void ChatScreen::runAction(int which) {
+  DeckThread* t = cur();
+  const bool ch = t && t->kind == TK_CHANNEL;
+  if (which == 0) {
+    openContactPicker();
+    return;
   }
+  if (which == 1) {
+    _overlay = OV_NONE;
+    _canned = 0;
+    return;
+  }
+  if (ch && which == 2) {
+    shareCurrentChannel();
+    _overlay = OV_NONE;
+    return;
+  }
+  // Jump to latest
+  _scroll = 0;
+  _overlay = OV_NONE;
+}
+
+void ChatScreen::openContactPicker() {
+  rebuildContactPicker();
+  if (_cn == 0) {
+    ui.toast("No contacts to share", C_YELLOW);
+    _overlay = OV_NONE;
+    return;
+  }
+  _overlay = OV_PICK_CONTACT;
+  _csel = 0;
+  _ctop = 0;
+}
+
+void ChatScreen::rebuildContactPicker() {
+  _cn = 0;
+  if (!ui.mesh) return;
+  int n = ui.mesh->getNumContacts();
+  for (int i = 0; i < n && _cn < CMAP_MAX; i++) {
+    ContactInfo ct;
+    if (!ui.mesh->getContactByIdx(i, ct)) continue;
+    if (ct.type == ADV_TYPE_NONE) continue;
+    if (!ct.name[0]) continue;
+    _cmap[_cn++] = i;
+  }
+  if (_csel >= _cn) _csel = _cn ? _cn - 1 : 0;
+  if (_csel < 0) _csel = 0;
+}
+
+static void urlEncodeName(const char* in, char* out, size_t out_sz) {
+  static const char* H = "0123456789ABCDEF";
+  size_t oi = 0;
+  for (const unsigned char* p = (const unsigned char*)in; *p && oi + 1 < out_sz; p++) {
+    unsigned char c = *p;
+    bool safe = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+    if (safe) {
+      out[oi++] = (char)c;
+    } else if (c == ' ' && oi + 1 < out_sz) {
+      out[oi++] = '+';
+    } else if (oi + 3 < out_sz) {
+      out[oi++] = '%';
+      out[oi++] = H[c >> 4];
+      out[oi++] = H[c & 0xF];
+    } else break;
+  }
+  out[oi] = 0;
+}
+
+bool ChatScreen::shareContactAt(int picker_i) {
+  if (picker_i < 0 || picker_i >= _cn || !ui.mesh) return false;
+  static ContactInfo ct;
+  if (!ui.mesh->getContactByIdx(_cmap[picker_i], ct)) return false;
+
+  char hex[PUB_KEY_SIZE * 2 + 1];
+  mesh::Utils::toHex(hex, ct.id.pub_key, PUB_KEY_SIZE);
+  for (char* p = hex; *p; p++)
+    if (*p >= 'A' && *p <= 'F') *p = (char)(*p - 'A' + 'a');
+
+  char enc[48];
+  urlEncodeName(ct.name[0] ? ct.name : "Contact", enc, sizeof(enc));
+
+  uint8_t typ = ct.type ? ct.type : ADV_TYPE_CHAT;
+  char msg[MD_TEXT_LEN];
+  // Official MeshCore share URL (phone apps parse this)
+  int n = snprintf(msg, sizeof(msg),
+                   "meshcore://contact/add?name=%s&public_key=%s&type=%u",
+                   enc, hex, (unsigned)typ);
+  if (n <= 0 || n >= (int)sizeof(msg)) {
+    ui.toast("Share text too long", C_RED);
+    return false;
+  }
+
+  DeckThread* t = cur();
+  if (!t) return false;
+  bool ok = false;
+  if (t->kind == TK_CHANNEL) ok = ui.sendChannel(t->channel_idx, msg);
+  else ok = ui.sendDM(t->pub_prefix, msg);
+  if (ok) {
+    char toast[40];
+    snprintf(toast, sizeof(toast), "Shared %s", ct.name);
+    ui.toast(toast, C_GREEN);
+    _scroll = 0;
+  }
+  return ok;
+}
+
+bool ChatScreen::shareCurrentChannel() {
+  DeckThread* t = cur();
+  if (!t || t->kind != TK_CHANNEL) {
+    ui.toast("Not a channel chat", C_YELLOW);
+    return false;
+  }
+  char url[160];
+  if (!ui.channelShareUrl(t->channel_idx, url, sizeof(url))) {
+    ui.toast("Can't share channel", C_RED);
+    return false;
+  }
+  if ((int)strlen(url) >= MD_TEXT_LEN) {
+    ui.toast("Share text too long", C_RED);
+    return false;
+  }
+  bool ok = ui.sendChannel(t->channel_idx, url);
+  if (ok) {
+    ui.toast("Channel link sent", C_GREEN);
+    _scroll = 0;
+  }
+  return ok;
+}
+
+// Shared layout for exclusive fullscreen overlays (no chat underlay).
+// Keep these macros above every use (draw + touch hit-testing).
+#define ACT_RH         20
+#define ACT_MW         220
+#define PICK_ROW       22
+#define PICK_LIST_TOP  (STATUS_H + 1 + 16)
+#define PICK_LIST_BOT  (SCREEN_H - 16)
+
+void ChatScreen::drawActionsMenu() {
+  GFXcanvas16& c = ui.cv();
+  // Full opaque screen only - never leave chat pixels under the menu
+  c.fillScreen(C_BG);
+  ui.drawStatusBar("Chat actions");
+
+  const char* labels[4];
+  int n = 0;
+  labels[n++] = "Share contact...";
+  labels[n++] = "Quick messages";
+  DeckThread* t = cur();
+  if (t && t->kind == TK_CHANNEL) labels[n++] = "Share this channel";
+  labels[n++] = "Jump to latest";
+  _nactions = n;
+
+  const int rh = ACT_RH, mw = ACT_MW, mh = n * rh + 20;
+  const int mx = (SCREEN_W - mw) / 2;
+  const int my = STATUS_H + 28;
+
+  c.fillRoundRect(mx, my, mw, mh, 8, C_BG_RAISED);
+  c.drawRoundRect(mx, my, mw, mh, 8, C_ACCENT);
+  c.setTextSize(1);
+  for (int i = 0; i < n; i++) {
+    int ry = my + 8 + i * rh;
+    bool on = (i == _act_sel);
+    if (on) c.fillRoundRect(mx + 4, ry - 2, mw - 8, rh - 2, 4, C_BG_ALT);
+    c.setTextColor(on ? C_FG : C_FG_DIM);
+    c.setCursor(mx + 14, ry + 3);
+    c.print(labels[i]);
+  }
+  c.setTextColor(C_FG_FAINT);
+  c.setCursor(8, SCREEN_H - 12);
+  c.print("up/down  enter=ok  back=close");
+}
+
+void ChatScreen::drawContactPicker() {
+  GFXcanvas16& c = ui.cv();
+  // Full opaque list screen - chat must not show through
+  c.fillScreen(C_BG);
+  ui.drawStatusBar("Share contact");
+
+  c.setTextSize(1);
+  c.setTextColor(C_FG_FAINT);
+  c.setCursor(8, STATUS_H + 4);
+  {
+    DeckThread* t = cur();
+    char into[40];
+    if (t && t->title[0]) {
+      char nm[24];
+      ellipsize(nm, sizeof(nm), t->title);
+      snprintf(into, sizeof(into), "into: %s%s", t->kind == TK_CHANNEL ? "#" : "", nm);
+    } else {
+      strcpy(into, "into current chat");
+    }
+    c.print(into);
+  }
+
+  const int rh = PICK_ROW;
+  const int top = PICK_LIST_TOP;
+  const int bot = PICK_LIST_BOT;
+  int vis = (bot - top) / rh;
+  if (vis < 1) vis = 1;
+
+  if (_csel < _ctop) _ctop = _csel;
+  if (_csel >= _ctop + vis) _ctop = _csel - vis + 1;
+  if (_ctop < 0) _ctop = 0;
+
+  if (_cn == 0) {
+    c.setTextColor(C_FG_FAINT);
+    c.setCursor(40, (top + bot) / 2);
+    c.print("No contacts to share");
+  }
+
+  // Static avoids large ContactInfo stack frames in the draw path
+  static ContactInfo ct;
+  for (int r = _ctop; r < _cn && r < _ctop + vis; r++) {
+    if (!ui.mesh || !ui.mesh->getContactByIdx(_cmap[r], ct)) continue;
+    int y = top + (r - _ctop) * rh;
+    if (y + rh > bot) break;
+    bool on = (r == _csel);
+    if (on) c.fillRoundRect(4, y, SCREEN_W - 8, rh - 2, 5, C_BG_RAISED);
+    uint16_t tc = ct.type == ADV_TYPE_REPEATER ? C_ORANGE :
+                  ct.type == ADV_TYPE_ROOM     ? C_PURPLE :
+                  ct.type == ADV_TYPE_SENSOR   ? C_YELLOW : C_CYAN;
+    c.fillCircle(16, y + rh / 2 - 1, 5, tc);
+    c.setTextColor(on ? C_FG : C_FG_DIM);
+    char nm[30];
+    ellipsize(nm, sizeof(nm), ct.name[0] ? ct.name : "?");
+    c.setCursor(28, y + 5);
+    c.print(nm);
+    if (on) {
+      c.setTextColor(C_ACCENT);
+      c.setCursor(SCREEN_W - 8 - 4 * 6, y + 5);
+      c.print("send");
+    }
+  }
+
+  if (_cn > vis) {
+    int bar_h = (bot - top) * vis / _cn;
+    if (bar_h < 4) bar_h = 4;
+    int bar_y = top + (bot - top - bar_h) * _ctop / (_cn - vis);
+    c.fillRect(SCREEN_W - 3, bar_y, 2, bar_h, C_FG_FAINT);
+  }
+
+  c.fillRect(0, SCREEN_H - 14, SCREEN_W, 14, C_BG);
+  c.setTextColor(C_FG_FAINT);
+  c.setCursor(6, SCREEN_H - 12);
+  c.print("tap/enter=send   back=menu");
 }
 
 bool ChatScreen::tryOfferContactShare(const char* text) {
@@ -265,12 +625,50 @@ bool ChatScreen::tryOfferContactShare(const char* text) {
     StrHelper::strncpy(_add_name, sh.name, sizeof(_add_name));
   }
   if (!_add_name[0]) strcpy(_add_name, "Contact");
-  _add_dlg = true;
+  _add_dlg = SHARE_CONTACT;
   return true;
 }
 
-bool ChatScreen::confirmAddContact() {
-  if (!ui.mesh) return false;
+bool ChatScreen::tryOfferChannelShare(const char* text) {
+  ParsedChannelShare sh;
+  if (!findChannelShare(text, sh) || !ui.mesh) return false;
+
+  int existing = ui.findChannelBySecret(sh.secret, sh.seclen);
+  if (existing >= 0) {
+    char nm[32];
+    if (ui.channelNameAt(existing, nm, sizeof(nm)))
+      ui.toast("Already on channel", C_YELLOW);
+    else
+      ui.toast("Already on channel", C_YELLOW);
+    return true;
+  }
+
+  memcpy(_add_pub, sh.secret, 32);
+  _add_seclen = sh.seclen;
+  StrHelper::strncpy(_add_name, sh.name, sizeof(_add_name));
+  if (!_add_name[0]) strcpy(_add_name, "channel");
+  _add_dlg = SHARE_CHANNEL;
+  return true;
+}
+
+bool ChatScreen::confirmAddShare() {
+  if (!ui.mesh) { _add_dlg = SHARE_NONE; return false; }
+
+  if (_add_dlg == SHARE_CHANNEL) {
+    int slot = ui.addChannelFromSecret(_add_name, _add_pub, _add_seclen);
+    _add_dlg = SHARE_NONE;
+    if (slot >= 0) {
+      // Jump into the new channel chat
+      ui.openChannel(slot);
+    }
+    return true;
+  }
+
+  if (_add_dlg != SHARE_CONTACT) {
+    _add_dlg = SHARE_NONE;
+    return false;
+  }
+
   ContactInfo ci;
   memset(&ci, 0, sizeof(ci));
   memcpy(ci.id.pub_key, _add_pub, PUB_KEY_SIZE);
@@ -290,7 +688,7 @@ bool ChatScreen::confirmAddContact() {
 
   if (ui.mesh->lookupContactByPubKey(ci.id.pub_key, PUB_KEY_SIZE)) {
     ui.toast("Already in contacts", C_YELLOW);
-    _add_dlg = false;
+    _add_dlg = SHARE_NONE;
     return true;
   }
   if (ui.mesh->addContact(ci)) {
@@ -300,18 +698,20 @@ bool ChatScreen::confirmAddContact() {
     ui.toast(msg, C_GREEN);
     ui.termLog(C_TERM_SYS, "contact added from share: %s type=%u",
                ci.name, (unsigned)ci.type);
+    // Refresh message senders: hex IDs for this contact become real names
+    for (int i = 0; i < ui.store.numThreads(); i++)
+      ui.reresolveThreadSenders(ui.store.thread(i));
   } else {
     ui.toast("Contact list full", C_RED);
   }
-  _add_dlg = false;
+  _add_dlg = SHARE_NONE;
   return true;
 }
 
-void ChatScreen::drawAddContactDialog() {
+void ChatScreen::drawAddShareDialog() {
   GFXcanvas16& c = ui.cv();
-  // Dim backdrop
-  for (int y = 0; y < SCREEN_H; y += 2)
-    c.drawFastHLine(0, y, SCREEN_W, C_BG);
+  // Solid scrim (striped dim left chat tappable/visible under dialog)
+  c.fillScreen(C_BG);
 
   const int bw = 280, bh = 110;
   const int bx = (SCREEN_W - bw) / 2, by = (SCREEN_H - bh) / 2;
@@ -321,24 +721,36 @@ void ChatScreen::drawAddContactDialog() {
   c.setTextSize(1);
   c.setTextColor(C_FG);
   c.setCursor(bx + 14, by + 14);
-  c.print("Add contact?");
+  c.print(_add_dlg == SHARE_CHANNEL ? "Join channel?" : "Add contact?");
 
   c.setTextColor(C_CYAN);
   c.setCursor(bx + 14, by + 34);
   {
     char line[40];
-    ellipsize(line, sizeof(line), _add_name);
+    if (_add_dlg == SHARE_CHANNEL) {
+      char with_hash[36];
+      snprintf(with_hash, sizeof(with_hash), "#%s", _add_name);
+      ellipsize(line, sizeof(line), with_hash);
+    } else {
+      ellipsize(line, sizeof(line), _add_name);
+    }
     c.print(line);
   }
 
   c.setTextColor(C_FG_FAINT);
   c.setCursor(bx + 14, by + 50);
-  const char* kind =
-      _add_type == ADV_TYPE_REPEATER ? "repeater" :
-      _add_type == ADV_TYPE_ROOM     ? "room" :
-      _add_type == ADV_TYPE_SENSOR   ? "sensor" : "companion";
-  c.printf("%s  %02X%02X%02X%02X…", kind,
-           _add_pub[0], _add_pub[1], _add_pub[2], _add_pub[3]);
+  if (_add_dlg == SHARE_CHANNEL) {
+    c.printf("shared key  %02X%02X%02X%02X...  (%dB)",
+             _add_pub[0], _add_pub[1], _add_pub[2], _add_pub[3],
+             _add_seclen);
+  } else {
+    const char* kind =
+        _add_type == ADV_TYPE_REPEATER ? "repeater" :
+        _add_type == ADV_TYPE_ROOM     ? "room" :
+        _add_type == ADV_TYPE_SENSOR   ? "sensor" : "companion";
+    c.printf("%s  %02X%02X%02X%02X...", kind,
+             _add_pub[0], _add_pub[1], _add_pub[2], _add_pub[3]);
+  }
 
   // Buttons
   c.fillRoundRect(bx + 20, by + 72, 100, 24, 5, C_GREEN);
@@ -346,7 +758,7 @@ void ChatScreen::drawAddContactDialog() {
   c.drawRoundRect(bx + 150, by + 72, 100, 24, 5, C_FG_DIM);
   c.setTextColor(C_BG);
   c.setCursor(bx + 48, by + 80);
-  c.print("Add");
+  c.print(_add_dlg == SHARE_CHANNEL ? "Join" : "Add");
   c.setTextColor(C_FG);
   c.setCursor(bx + 170, by + 80);
   c.print("Cancel");
@@ -359,6 +771,7 @@ DeckThread* ChatScreen::cur() {
 
 void ChatScreen::switchTab(int dir) {
   if (_norder == 0) return;
+  closeOverlays();
   _tab = (_tab + dir + _norder) % _norder;
   _scroll = 0;
   DeckThread* t = cur();
@@ -367,6 +780,46 @@ void ChatScreen::switchTab(int dir) {
 
 void ChatScreen::draw() {
   GFXcanvas16& c = ui.cv();
+
+  // IMPORTANT: draw ONLY the overlay when open. Painting chat first then
+  // overlaying caused partial/corrupt displays on device (and left underlay
+  // content tappable). Early-return keeps a single clean frame.
+  if (_overlay == OV_PICK_CONTACT) {
+    drawContactPicker();
+    return;
+  }
+  if (_overlay == OV_ACTIONS) {
+    drawActionsMenu();
+    return;
+  }
+  if (_canned >= 0) {
+    // Quick messages as exclusive screen too
+    c.fillScreen(C_BG);
+    ui.drawStatusBar("Quick messages");
+    const int mw = 200, rh = 20, mh = N_CANNED * rh + 20;
+    const int mx = (SCREEN_W - mw) / 2;
+    const int my = STATUS_H + 24;
+    c.fillRoundRect(mx, my, mw, mh, 8, C_BG_RAISED);
+    c.drawRoundRect(mx, my, mw, mh, 8, C_ACCENT);
+    c.setTextSize(1);
+    for (int i = 0; i < N_CANNED; i++) {
+      const int ry = my + 8 + i * rh;
+      const bool s = (i == _canned);
+      if (s) c.fillRoundRect(mx + 4, ry - 1, mw - 8, rh - 2, 4, C_ACCENT_DK);
+      c.setTextColor(s ? C_FG : C_FG_DIM);
+      c.setCursor(mx + 12, ry + 4);
+      c.print(CANNED[i]);
+    }
+    c.setTextColor(C_FG_FAINT);
+    c.setCursor(8, SCREEN_H - 12);
+    c.print("enter=send  back=close");
+    return;
+  }
+  if (_add_dlg != SHARE_NONE) {
+    drawAddShareDialog();
+    return;
+  }
+
   c.fillScreen(C_BG);
   ui.drawStatusBar("Chat");
 
@@ -400,11 +853,11 @@ void ChatScreen::draw() {
       const bool out = (m->flags & MF_OUT) != 0;
       const bool show_name = !out && m->sender[0];
 
-      // Truncate name early so width math is accurate
+      // Truncate + ASCII-scrub name (GFX font can't draw UTF-8 nick fragments)
       char namebuf[18];
       namebuf[0] = 0;
       if (show_name) {
-        StrHelper::strncpy(namebuf, m->sender, sizeof(namebuf));
+        ellipsize(namebuf, sizeof(namebuf), m->sender);
         if (strlen(namebuf) > 14) {
           namebuf[13] = '.';
           namebuf[14] = '.';
@@ -412,7 +865,7 @@ void ChatScreen::draw() {
         }
       }
 
-      // Name-line meta (hops + SNR) — build before width calc
+      // Name-line meta (hops + SNR) - build before width calc
       char sig[24];
       sig[0] = 0;
       if (show_name) {
@@ -430,7 +883,7 @@ void ChatScreen::draw() {
         }
       }
 
-      // Width first — height must use the *same* wrap width as drawRichText,
+      // Width first - height must use the *same* wrap width as drawRichText,
       // or multi-line text overflows into the next bubble.
       int bub_w = BUB_MAX_W;
 
@@ -459,7 +912,7 @@ void ChatScreen::draw() {
 
       const int text_max_w = bub_w - 14;
       const int text_h = measureRichTextHeight(c, text_max_w, m->text, 1);
-      const bool has_share = messageHasContactShare(m->text);
+      const bool has_share = messageHasShare(m->text);
       // top pad 4 + text + bottom pad 4; name row + optional "tap to add" chip
       int bub_h = text_h + 8 + (show_name ? 10 : 0) + (has_share ? 12 : 0);
       // Extra gap so wrapped last lines never kiss the next bubble
@@ -467,10 +920,10 @@ void ChatScreen::draw() {
 
       const int by = y - bub_h;
 
-      // Entirely above the chat window — stop
+      // Entirely above the chat window - stop
       if (by + bub_h <= CHAT_TOP) break;
 
-      // Straddles the top edge — skip so we never paint on the tabs
+      // Straddles the top edge - skip so we never paint on the tabs
       if (by < CHAT_TOP) {
         y = by - 5;
         continue;
@@ -505,7 +958,8 @@ void ChatScreen::draw() {
       if (has_share && bub_h >= 28) {
         c.setTextColor(C_ACCENT);
         c.setCursor(bx + 7, by + bub_h - 10);
-        c.print("tap to add");
+        ParsedChannelShare chs;
+        c.print(findChannelShare(m->text, chs) ? "tap to join" : "tap to add");
       }
 
       // Relative time under every bubble
@@ -645,31 +1099,7 @@ void ChatScreen::draw() {
     c.fillRect(cx + 1, CHAT_BOT + 6, 2, 10, C_ACCENT);
   }
 
-  // ---- canned quick-message picker ----
-  if (_canned >= 0) {
-    const int mw = 180, rh = 20, mh = N_CANNED * rh + 24;
-    const int mx = (SCREEN_W - mw) / 2;
-    const int my = (SCREEN_H - mh) / 2;
-
-    c.fillRoundRect(mx, my, mw, mh, 8, C_BG_RAISED);
-    c.drawRoundRect(mx, my, mw, mh, 8, C_ACCENT);
-
-    c.setTextSize(1);
-    c.setTextColor(C_ACCENT);
-    c.setCursor(mx + 10, my + 7);
-    c.print("Quick messages");
-
-    for (int i = 0; i < N_CANNED; i++) {
-      const int ry = my + 20 + i * rh;
-      const bool s = (i == _canned);
-      if (s) c.fillRoundRect(mx + 4, ry - 1, mw - 8, rh - 2, 4, C_ACCENT_DK);
-      c.setTextColor(s ? C_FG : C_FG_DIM);
-      c.setCursor(mx + 12, ry + 4);
-      c.print(CANNED[i]);
-    }
-  }
-
-  if (_add_dlg) drawAddContactDialog();
+  // Overlays handled by early-return above - do not paint them here
 }
 
 void ChatScreen::sendCompose() {
@@ -697,17 +1127,34 @@ void ChatScreen::sendCanned(int i) {
 }
 
 bool ChatScreen::key(uint8_t k) {
-  // Add-contact confirm dialog
-  if (_add_dlg) {
-    if (k == 0x0D || k == 'y' || k == 'Y' || k == 'a' || k == 'A') {
-      confirmAddContact();
+  // Add contact/channel confirm dialog
+  if (_add_dlg != SHARE_NONE) {
+    if (k == 0x0D || k == 'y' || k == 'Y' || k == 'a' || k == 'A' ||
+        k == 'j' || k == 'J') {
+      confirmAddShare();
       return true;
     }
     if (k == 0x1B || k == 0x08 || k == 0x7F || k == 'n' || k == 'N') {
-      _add_dlg = false;
+      _add_dlg = SHARE_NONE;
       return true;
     }
     return true;  // swallow keys while dialog open
+  }
+  if (_overlay == OV_ACTIONS) {
+    if (k == 0x0D) { runAction(_act_sel); return true; }
+    if (k == 0x1B || k == 0x08 || k == 0x7F) { _overlay = OV_NONE; return true; }
+    return true;
+  }
+  if (_overlay == OV_PICK_CONTACT) {
+    if (k == 0x0D) {
+      if (shareContactAt(_csel)) _overlay = OV_NONE;
+      return true;
+    }
+    if (k == 0x1B || k == 0x08 || k == 0x7F) {
+      openActions();  // back to actions menu
+      return true;
+    }
+    return true;
   }
   // canned quick-message picker open: digits pick, backspace/esc close
   if (_canned >= 0) {
@@ -726,6 +1173,8 @@ bool ChatScreen::key(uint8_t k) {
     return false;   // empty compose -> back
   }
   if (k == 0x09) { switchTab(1); return true; }   // tab key
+  // '/' opens chat actions (keyboard without long-press)
+  if (k == '/' && _clen == 0) { openActions(); return true; }
   if (k >= 32 && k < 127 && _clen < MD_TEXT_LEN - 2) {
     _compose[_clen++] = k;
     _compose[_clen] = 0;
@@ -735,9 +1184,26 @@ bool ChatScreen::key(uint8_t k) {
 }
 
 bool ChatScreen::nav(NavEvent e) {
-  if (_add_dlg) {
-    if (e == NAV_SELECT) { confirmAddContact(); return true; }
-    if (e == NAV_BACK || e == NAV_LEFT) { _add_dlg = false; return true; }
+  if (_add_dlg != SHARE_NONE) {
+    if (e == NAV_SELECT) { confirmAddShare(); return true; }
+    if (e == NAV_BACK || e == NAV_LEFT) { _add_dlg = SHARE_NONE; return true; }
+    return true;
+  }
+  if (_overlay == OV_ACTIONS) {
+    if (e == NAV_UP) { if (_act_sel > 0) _act_sel--; return true; }
+    if (e == NAV_DOWN) { if (_act_sel < _nactions - 1) _act_sel++; return true; }
+    if (e == NAV_SELECT) { runAction(_act_sel); return true; }
+    if (e == NAV_BACK) { _overlay = OV_NONE; return true; }
+    return true;
+  }
+  if (_overlay == OV_PICK_CONTACT) {
+    if (e == NAV_UP) { if (_csel > 0) _csel--; return true; }
+    if (e == NAV_DOWN) { if (_csel < _cn - 1) _csel++; return true; }
+    if (e == NAV_SELECT) {
+      if (shareContactAt(_csel)) _overlay = OV_NONE;
+      return true;
+    }
+    if (e == NAV_BACK) { openActions(); return true; }
     return true;
   }
   // canned quick-message picker navigation
@@ -761,26 +1227,82 @@ bool ChatScreen::nav(NavEvent e) {
 }
 
 bool ChatScreen::touch(const TouchEvent& e) {
-  if (_add_dlg) {
+  if (_add_dlg != SHARE_NONE) {
     if (e.kind != TouchEvent::TAP) return true;
-    // Dialog buttons: Add left, Cancel right (see drawAddContactDialog)
+    // Dialog buttons: Add/Join left, Cancel right
     const int bw = 280, bh = 110;
     const int bx = (SCREEN_W - bw) / 2, by = (SCREEN_H - bh) / 2;
     if (e.y >= by + 72 && e.y <= by + 96) {
       if (e.x >= bx + 20 && e.x <= bx + 120) {
-        confirmAddContact();
+        confirmAddShare();
         return true;
       }
       if (e.x >= bx + 150 && e.x <= bx + 250) {
-        _add_dlg = false;
+        _add_dlg = SHARE_NONE;
         return true;
       }
     }
     // Tap outside cancels
     if (e.x < bx || e.x > bx + bw || e.y < by || e.y > by + bh)
-      _add_dlg = false;
+      _add_dlg = SHARE_NONE;
     return true;
   }
+
+  // ---- long-press actions menu (layout must match drawActionsMenu) ----
+  if (_overlay == OV_ACTIONS) {
+    if (e.kind == TouchEvent::LONG) return true;
+    if (e.kind != TouchEvent::TAP) return true;
+    const int rh = ACT_RH, mw = ACT_MW;
+    int n = _nactions > 0 ? _nactions : 3;
+    const int mh = n * rh + 20;
+    const int mx = (SCREEN_W - mw) / 2;
+    const int my = STATUS_H + 28;
+    if (e.x >= mx && e.x < mx + mw && e.y >= my + 8 && e.y < my + 8 + n * rh) {
+      int i = (e.y - (my + 8)) / rh;
+      if (i >= 0 && i < n) runAction(i);
+      return true;
+    }
+    // Tap outside menu box closes
+    if (e.x < mx || e.x >= mx + mw || e.y < my || e.y >= my + mh)
+      _overlay = OV_NONE;
+    return true;
+  }
+
+  // ---- contact picker (layout must match drawContactPicker) ----
+  if (_overlay == OV_PICK_CONTACT) {
+    if (e.kind == TouchEvent::LONG) return true;
+    if (e.kind == TouchEvent::DRAG) {
+      // finger drag: positive dy = scroll list up (older), same as list feel
+      if (e.dy > 6 && _csel > 0) _csel--;
+      else if (e.dy < -6 && _csel < _cn - 1) _csel++;
+      return true;
+    }
+    if (e.kind != TouchEvent::TAP) return true;
+    const int rh = PICK_ROW;
+    const int top = PICK_LIST_TOP;
+    const int bot = PICK_LIST_BOT;
+    int vis = (bot - top) / rh;
+    if (vis < 1) vis = 1;
+    if (e.y >= top && e.y < bot) {
+      int r = _ctop + (e.y - top) / rh;
+      if (r >= _ctop && r < _ctop + vis && r < _cn) {
+        _csel = r;
+        if (shareContactAt(_csel)) _overlay = OV_NONE;
+      }
+      return true;
+    }
+    // Tap footer/status -> back to actions
+    openActions();
+    return true;
+  }
+
+  // Long-press anywhere in chat opens actions (while not in other dialogs)
+  if (e.kind == TouchEvent::LONG) {
+    openActions();
+    ui.hw.beep(1200, 20);
+    return true;
+  }
+
   if (e.kind == TouchEvent::DRAG) {
     _scroll += e.dy;
     if (_scroll < 0) _scroll = 0;
@@ -789,7 +1311,7 @@ bool ChatScreen::touch(const TouchEvent& e) {
   if (e.kind == TouchEvent::TAP) {
     // tab bar tap: cycle
     if (e.y < CHAT_TOP && e.y > STATUS_H) { switchTab(1); return true; }
-    // bubble tap: contact share -> confirm add; URL -> QR; else quote sender
+    // bubble tap: contact/channel share -> confirm; URL -> QR; else quote
     DeckThread* t = cur();
     if (!t) return true;
     for (int i = 0; i < _nhits; i++) {
@@ -803,9 +1325,12 @@ bool ChatScreen::touch(const TouchEvent& e) {
           ui.toast("Resending message", C_ACCENT);
           return true;
         }
-        // Shared contact card (room / channel / DM) — offer to add
+        // Official meshcore:// contact or channel share links
         if (tryOfferContactShare(m->text))
           return true;
+        if (tryOfferChannelShare(m->text))
+          return true;
+        // bare meshcore://channel URLs also handled above; http -> QR
         const char* url = strstr(m->text, "http");
         if (url) {
           char u[128];

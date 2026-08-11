@@ -23,11 +23,12 @@ static const AppDef APPS[] = {
 #define N_APPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
 
 // grid layout: 5 rows x 3 cols (15 cells; N_APPS must fit)
+// GRID_Y0 must sit below GPS/WiFi line (baseline ~86 + 8px font ~ 94)
 #define GRID_X0   14
-#define GRID_Y0   90
+#define GRID_Y0   100
 #define GRID_ROWS 5
 #define CELL_W    100
-#define CELL_H    28
+#define CELL_H    27   // 100 + 5*27 = 235 < 240
 
 // open an app tile: Discover sends a flood advert first, everything else just navigates
 static void openApp(UITask& ui, int i) {
@@ -114,28 +115,30 @@ void HomeScreen::draw() {
     int total_w = (strlen(g) + 3 + strlen(w)) * 6;   // GPS + "   " + WiFi
     int x = SCREEN_W / 2 - total_w / 2;
     if (x < 6) x = 6;
-    c.setCursor(x, 88);
+    // Keep above app grid (GRID_Y0); leave a few px of air
+    c.setCursor(x, 86);
     c.setTextColor(gcol);   c.print(g);
     c.setTextColor(C_FG_FAINT); c.print("   ");
     c.setTextColor(wcol);   c.print(w);
   }
 
-  // app grid 5x3
+  // app grid 5x3 - starts below GPS/WiFi status
   for (int i = 0; i < N_APPS; i++) {
     int gx = GRID_X0 + (i % 3) * CELL_W;
     int gy = GRID_Y0 + (i / 3) * CELL_H;
     bool sel = i == _sel;
-    c.fillRoundRect(gx, gy, CELL_W - 8, CELL_H - 5, 6, sel ? C_BG_RAISED : C_BG_ALT);
-    if (sel) c.drawRoundRect(gx, gy, CELL_W - 8, CELL_H - 5, 6, APPS[i].color);
-    // glyph badge
-    c.fillRoundRect(gx + 5, gy + 5, 20, 20, 5, APPS[i].color);
+    const int tile_h = CELL_H - 4;
+    c.fillRoundRect(gx, gy, CELL_W - 8, tile_h, 5, sel ? C_BG_RAISED : C_BG_ALT);
+    if (sel) c.drawRoundRect(gx, gy, CELL_W - 8, tile_h, 5, APPS[i].color);
+    // glyph badge (slightly smaller so CELL_H=27 still looks balanced)
+    c.fillRoundRect(gx + 5, gy + 3, 18, 18, 4, APPS[i].color);
     c.setTextSize(2);
     c.setTextColor(C_BG);
-    c.setCursor(gx + 9, gy + 8);
+    c.setCursor(gx + 8, gy + 5);
     c.write(APPS[i].glyph);
     c.setTextSize(1);
     c.setTextColor(sel ? C_FG : C_FG_DIM);
-    c.setCursor(gx + 30, gy + 11);
+    c.setCursor(gx + 28, gy + 9);
     c.print(APPS[i].label);
     // unread badge on chat
     if (APPS[i].scr == SCR_CHAT) {

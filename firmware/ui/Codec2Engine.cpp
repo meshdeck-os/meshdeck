@@ -74,7 +74,7 @@ void Codec2Engine::downsample16to8(const int16_t* in16, int n16, int16_t* out8) 
 }
 
 void Codec2Engine::upsample8to16(const int16_t* in8, int n8, int16_t* out16) {
-  // Linear interpolate — fewer staircase artifacts than zero-order hold
+  // Linear interpolate - fewer staircase artifacts than zero-order hold
   for (int i = 0; i < n8 - 1; ++i) {
     int32_t a = in8[i];
     int32_t b = in8[i + 1];
@@ -97,7 +97,7 @@ bool Codec2Engine::encode16k(const int16_t* pcm16, int samples16) {
 
     downsample16to8(pcm16 + f * PCM16_SAMPLES, PCM16_SAMPLES, _tmp8);
 
-    // Extra safety – these should never be null after a successful begin()
+    // Extra safety - these should never be null after a successful begin()
     if (!_c2 || !_tmp8 || !_pkt) {
       Serial.println("[c2] null pointer just before codec2_encode");
       return false;

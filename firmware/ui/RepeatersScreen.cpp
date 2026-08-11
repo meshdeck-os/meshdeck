@@ -46,7 +46,7 @@ void RepeatersScreen::ensureConsoleFor(const uint8_t* prefix6) {
   if (_console_bound && memcmp(_console_prefix, prefix6, 6) == 0) return;
   memcpy(_console_prefix, prefix6, 6);
   _console_bound = true;
-  _cn = 0;  // new peer — don't mix prior console history
+  _cn = 0;  // new peer - don't mix prior console history
 }
 
 void RepeatersScreen::onCliResponse(const char* from, const char* text) {
@@ -187,7 +187,7 @@ void RepeatersScreen::draw() {
   c.fillScreen(C_BG);
   c.setTextSize(1);
 
-  // ── Login dialog ──────────────────────────────────────────
+  // -- Login dialog ------------------------------------------
   if (_mode == MODE_LOGIN) {
     ContactInfo* ct = selContact();
     char title[40];
@@ -254,7 +254,7 @@ void RepeatersScreen::draw() {
     return;
   }
 
-  // ── Console ───────────────────────────────────────────────
+  // -- Console -----------------------------------------------
   if (_mode == MODE_CONSOLE) {
     char title[44];
     snprintf(title, sizeof(title), "%s", _sel < _n ? _names[_sel] : "?");
@@ -347,7 +347,7 @@ void RepeatersScreen::draw() {
     return;
   }
 
-  // ── List ──────────────────────────────────────────────────
+  // -- List --------------------------------------------------
   char title[40];
   snprintf(title, sizeof(title), "Repeaters & rooms (%d)", _n);
   ui.drawStatusBar(title);
@@ -487,7 +487,7 @@ void RepeatersScreen::sendLine() {
   if (!ct || _llen == 0) { _llen = 0; return; }
   _line[_llen] = 0;
 
-  // Local slash commands — typed as /l, /s, ... then ENTER so bare letters
+  // Local slash commands - typed as /l, /s, ... then ENTER so bare letters
   // can start normal words (e.g. "set", "advert", "clock").
   if (_line[0] == '/') {
     const char* p = _line + 1;
@@ -545,7 +545,7 @@ void RepeatersScreen::sendLine() {
 }
 
 bool RepeatersScreen::key(uint8_t k) {
-  // ── Login dialog ──
+  // -- Login dialog --
   if (_mode == MODE_LOGIN) {
     if (k == 0x0D) { submitLogin(); return true; }
     if (k == 0x08 || k == 0x7F) {
@@ -571,7 +571,7 @@ bool RepeatersScreen::key(uint8_t k) {
       }
     }
     // All printable chars (including '.') go into the password.
-    // Show/hide uses trackball UP/DOWN — see nav().
+    // Show/hide uses trackball UP/DOWN - see nav().
     if (k >= 32 && k < 127 && _llen < 15) {  // MeshCore max 15
       _line[_llen++] = k;
       return true;
@@ -579,8 +579,8 @@ bool RepeatersScreen::key(uint8_t k) {
     return false;
   }
 
-  // ── Console ──
-  // No bare-letter shortcuts here — letters type into the command line.
+  // -- Console --
+  // No bare-letter shortcuts here - letters type into the command line.
   // Shortcuts are slash commands: /l /s /a /n /c /r then ENTER (see sendLine).
   if (_mode == MODE_CONSOLE) {
     if (k == 0x0D) { sendLine(); return true; }
@@ -596,7 +596,7 @@ bool RepeatersScreen::key(uint8_t k) {
     return false;
   }
 
-  // ── List ──
+  // -- List --
   if (!_n) return false;
   if (k == 0x0D || k == ' ') {
     ContactInfo* ct = selContact();
@@ -607,7 +607,7 @@ bool RepeatersScreen::key(uint8_t k) {
       openConsole();
     } else if (e) {
       // One-tap re-login with saved cred (blank password rooms included).
-      // Boot auto-login only for rooms — repeaters keep the password only.
+      // Boot auto-login only for rooms - repeaters keep the password only.
       const bool want_auto = (ct->type == ADV_TYPE_ROOM) && e->auto_login;
       if (ui.beginRoomLogin(*ct, e->password, want_auto)) {
         ensureConsoleFor(ct->id.pub_key);
@@ -620,7 +620,7 @@ bool RepeatersScreen::key(uint8_t k) {
           onCliResponse(">", "already in session");
         }
       } else {
-        // Send blocked — open password UI so user can force a manual attempt
+        // Send blocked - open password UI so user can force a manual attempt
         openLogin();
       }
     } else {

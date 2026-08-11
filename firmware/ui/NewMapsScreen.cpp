@@ -4,7 +4,7 @@
 #include <math.h>
 #include <string.h>
 
-// Zoom steps (px per degree lon) — denser than classic Map for street detail
+// Zoom steps (px per degree lon) - denser than classic Map for street detail
 static const float NM_ZOOMS[] = {
   8, 16, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096
 };
@@ -236,7 +236,7 @@ static LayerStyle nmStyle(uint8_t layer, float scale) {
   return s;
 }
 
-// Draw order: areas first, then rails/paths, then roads low→high, buildings last under labels
+// Draw order: areas first, then rails/paths, then roads low->high, buildings last under labels
 static const uint8_t NM_DRAW_ORDER[] = {
   NML_LANDUSE_RESIDENTIAL, NML_LANDUSE_INDUSTRIAL,
   NML_LANDUSE_FOREST, NML_LANDUSE_PARK,

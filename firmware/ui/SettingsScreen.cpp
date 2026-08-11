@@ -392,10 +392,10 @@ void SettingsScreen::select() {
     }
     case SI_ABOUT:
       ui.termLog(C_TERM_SYS, "MeshDeck v%s | MeshCore %s | built " FIRMWARE_BUILD_DATE, MESHDECK_VERSION, FIRMWARE_VERSION);
-      ui.termLog(C_TERM_SYS, "License: MIT (MeshDeck) — see LICENSE / THIRD_PARTY.md");
+      ui.termLog(C_TERM_SYS, "License: MIT (MeshDeck) - see LICENSE / THIRD_PARTY.md");
 #ifdef MESHDECK_BETA
       ui.termLog(C_TERM_SYS,
-                 "Voice: Codec2 (LGPL-2.1) — firmware/codec2/COPYING");
+                 "Voice: Codec2 (LGPL-2.1) - firmware/codec2/COPYING");
 #endif
       ui.toast("MeshDeck v" MESHDECK_VERSION " - see terminal");
       break;
@@ -477,7 +477,7 @@ bool SettingsScreen::key(uint8_t k) {
       rebuildFilter();
       return true;
     }
-    return false;  // empty filter → back
+    return false;  // empty filter -> back
   }
   if (k == 0x1B) {  // Esc clears filter
     if (_flen > 0) {
@@ -488,7 +488,7 @@ bool SettingsScreen::key(uint8_t k) {
     }
     return false;
   }
-  // Printable → filter text (same as Contacts)
+  // Printable -> filter text (same as Contacts)
   if (k >= 32 && k < 127 && _flen < (int)sizeof(_filter) - 1) {
     _filter[_flen++] = (char)k;
     _filter[_flen] = 0;

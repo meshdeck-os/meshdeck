@@ -38,7 +38,7 @@ enum NavEvent : uint8_t {
 };
 
 struct TouchEvent {
-  enum Kind : uint8_t { NONE = 0, TAP, DRAG, RELEASE } kind;
+  enum Kind : uint8_t { NONE = 0, TAP, DRAG, RELEASE, LONG } kind;
   int16_t x, y;      // current position (screen coords)
   int16_t dx, dy;    // delta since last event (DRAG)
 };
@@ -70,15 +70,15 @@ public:
   void kickActivity() { _last_activity = millis(); }
 
   // -- sound --
+  // When off (or volume 0), beep/chimeMessage/chimeError are silent.
+  // applySettings() wires Settings -> Sound / Volume into setSound().
   void setSound(bool on, uint8_t volume_0_10) { _snd_on = on; _snd_vol = volume_0_10; }
   bool soundOn() const { return _snd_on; }
   uint8_t volume() const { return _snd_vol; }
-  void beep(uint16_t freq, uint16_t ms);    // blocking, short
-  void chimeMessage();
-  void chimeBoot();
-  void chimeError();
-  // Loud multi-tone jingle after boot (forces volume on). Returns false if muted/disabled.
-  bool playStartupSelfTest();
+  void beep(uint16_t freq, uint16_t ms);    // blocking, short; honors Sound setting
+  void chimeMessage();                      // incoming message; honors Sound
+  void chimeBoot();                         // no-op (boot stays quiet)
+  void chimeError();                        // honors Sound
 
   // -- SD card (shared SPI bus; call sdBegin, use SD, then sdEnd) --
   bool sdBegin();
@@ -135,6 +135,7 @@ private:
 
   // touch state
   bool _touching = false;
+  bool _t_long_fired = false;   // LONG already emitted for this press
   int16_t _tx = 0, _ty = 0, _t_start_x = 0, _t_start_y = 0;
   uint32_t _t_start_ms = 0;
   bool _t_moved = false;

@@ -122,7 +122,7 @@ void LastHeardScreen::addSelected() {
   }
 
   if (ui.mesh->addContact(*recent)) {
-    ui.mesh->saveContacts();  // was RAM-only before — vanished on reboot
+    ui.mesh->saveContacts();  // was RAM-only before - vanished on reboot
     ui.toast("Contact saved", C_GREEN);
   } else {
     ui.toast("Contact list full", C_RED);
@@ -165,7 +165,7 @@ bool LastHeardScreen::touch(const TouchEvent& e) {
   if (idx < 0 || idx >= ui.heardCount()) return false;
 
   if (idx == _sel) {
-    // second tap on the already-selected row → save
+    // second tap on the already-selected row -> save
     addSelected();
   } else {
     _sel = idx;

@@ -33,9 +33,21 @@ private:
   void sendCanned(int i);
   void switchTab(int dir);
   DeckThread* cur();
-  void drawAddContactDialog();
+  void drawAddShareDialog();
   bool tryOfferContactShare(const char* text);
-  bool confirmAddContact();
+  bool tryOfferChannelShare(const char* text);
+  bool confirmAddShare();
+
+  // Long-press actions menu + contact share picker
+  void openActions();
+  void closeOverlays();
+  void drawActionsMenu();
+  void runAction(int which);
+  void openContactPicker();
+  void rebuildContactPicker();
+  void drawContactPicker();
+  bool shareContactAt(int picker_i);
+  bool shareCurrentChannel();
 
   int _tab = 0;              // index into sorted order
   int _order[MD_MAX_THREADS];
@@ -43,16 +55,28 @@ private:
   int _scroll = 0;           // px from bottom
   char _compose[MD_TEXT_LEN];
   int _clen = 0;
-  // bubble hitboxes for tap-to-reply / QR / contact share
+  // bubble hitboxes for tap-to-reply / QR / contact|channel share
   struct Hit { int16_t y0, y1; int msg_idx; uint8_t has_share; } _hits[24];
   int _nhits = 0;
   int _canned = -1;          // -1 = off, else index into the quick-message list
 
-  // Pending "add shared contact?" dialog
-  bool    _add_dlg = false;
-  uint8_t _add_pub[32] = {0};
-  uint8_t _add_type = 1;
+  // Pending "add shared contact/channel?" dialog
+  enum ShareDlg : uint8_t { SHARE_NONE = 0, SHARE_CONTACT, SHARE_CHANNEL };
+  ShareDlg _add_dlg = SHARE_NONE;
+  uint8_t _add_pub[32] = {0};     // contact pubkey, or channel secret
+  uint8_t _add_type = 1;          // contact type
+  int     _add_seclen = 0;        // channel secret length (16 or 32)
   char    _add_name[32] = {0};
+
+  // Long-press UI
+  enum Overlay : uint8_t { OV_NONE = 0, OV_ACTIONS, OV_PICK_CONTACT };
+  Overlay _overlay = OV_NONE;
+  int _act_sel = 0;               // actions menu selection
+  int _nactions = 0;              // active action count (channel-dependent)
+  static const int CMAP_MAX = 48;
+  int _cmap[CMAP_MAX];            // contact indices for picker
+  int _cn = 0;
+  int _csel = 0, _ctop = 0;
 };
 
 // ---------------------------------------------------------------- Contacts
@@ -77,7 +101,7 @@ private:
   int _top = 0;
   int _menu = -1;
 
-  char _filter[20] = {0};   // MUST be zeroed — garbage here looks like a filter
+  char _filter[20] = {0};   // MUST be zeroed - garbage here looks like a filter
   int  _flen = 0;
   // Index map: filtered row -> real contact index (size for MAX_CONTACTS)
   static constexpr int FMAP_MAX = 350;
@@ -380,18 +404,39 @@ public:
   bool nav(NavEvent e) override;
   bool touch(const TouchEvent& e) override;
 private:
-  void select();
+  enum Mode : uint8_t {
+    LIST = 0,
+    MENU,
+    ADD_NAME,
+    ADD_KEY,
+    RENAME,
+    REKEY,
+    SHOW_KEY,
+    CONFIRM_DEL,
+  };
+  void refreshCount();
+  int  meshIndex() const;          // selected list row -> mesh slot
+  void openMenu();
+  void runAction(int which);
+  void beginAdd();
   void applyEdit();
-  int  _n = 0;               // channel count (refreshed on enter/draw)
-  int  _sel = 0, _top = 0;
-  bool _adding = false;
-  int  _phase = 0;           // 0 = enter name, 1 = enter key
+  void drawEditor(const char* title, const char* hint);
+  void drawShowKey();
+  void drawConfirmDel();
+
+  int  _n = 0;               // occupied channel count
+  int  _sel = 0, _top = 0;   // list selection (includes "+ Add" row at _n)
+  int  _menu = 0;            // action index when Mode::MENU
+  Mode _mode = LIST;
+  int  _edit_slot = -1;      // mesh index for rename/rekey/show/delete
   char _newname[32];
   char _edit[68];
   int  _elen = 0;
+  char _show_key[48];        // base64 for SHOW_KEY
+  char _show_name[32];
 };
 
-// ---------------------------------------------------------------- Voice call (beta, Contacts → Call...)
+// ---------------------------------------------------------------- Voice call (beta, Contacts -> Call...)
 
 class VoiceScreen : public Screen {
 public:
@@ -414,7 +459,7 @@ public:
   bool isInCall() const;          // OUTGOING / INCOMING / CONNECTED
   void drawIncomingOverlay(GFXcanvas16& c);
 
-  // Mesh / media hooks (UITask → VoiceScreen)
+  // Mesh / media hooks (UITask -> VoiceScreen)
   void pushRxVoice(const uint8_t* data, size_t len, bool eos,
                    const char* from_name, float snr,
                    const ContactInfo* from = nullptr);
@@ -422,7 +467,7 @@ public:
   void onPacketAcked(uint32_t tag, bool eos);
   void checkVoiceAcks();
 #ifdef MESHDECK_BETA
-  void pollPTT();          // TX: drain encode worker → mesh
+  void pollPTT();          // TX: drain encode worker -> mesh
   void pollRxPlayback();   // ensure c2dec alive while listening (decode not on loop)
   void onTargetAdvert(const ContactInfo& contact);
 
