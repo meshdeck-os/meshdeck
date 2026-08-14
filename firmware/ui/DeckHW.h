@@ -38,9 +38,9 @@ enum NavEvent : uint8_t {
 };
 
 struct TouchEvent {
-  enum Kind : uint8_t { NONE = 0, TAP, DRAG, RELEASE, LONG } kind;
-  int16_t x, y;      // current position (screen coords)
-  int16_t dx, dy;    // delta since last event (DRAG)
+  enum Kind : uint8_t { NONE = 0, TAP, DRAG, RELEASE, LONG, PINCH } kind;
+  int16_t x, y;      // current position / pinch centroid
+  int16_t dx, dy;    // DRAG: pixel delta. PINCH: dx=dist delta, dy=current dist
 };
 
 class DeckHW {
@@ -90,7 +90,8 @@ public:
 
 private:
   void tbISRUpdate();
-  bool gt911Read(uint8_t* buf);
+  bool gt911Read(uint8_t* buf, uint8_t nbytes);
+  void mapRawTouch(int16_t rx, int16_t ry, int16_t& sx, int16_t& sy) const;
   void i2sTone(uint16_t freq, uint16_t ms);
 
   SPIClass* _spi = nullptr;                 // HSPI shared bus (display + SD)
@@ -139,4 +140,6 @@ private:
   int16_t _tx = 0, _ty = 0, _t_start_x = 0, _t_start_y = 0;
   uint32_t _t_start_ms = 0;
   bool _t_moved = false;
+  bool _pinch = false;
+  int16_t _pinch_dist = 0;
 };

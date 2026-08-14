@@ -134,17 +134,36 @@ class NewMapsScreen : public Screen {
 public:
   NewMapsScreen(UITask& u) : Screen(u) {}
   void enter() override;
+  void leave() override;
   void draw() override;
   bool key(uint8_t c) override;
   bool nav(NavEvent e) override;
   bool touch(const TouchEvent& e) override;
 private:
   void project(double lat, double lon, int& x, int& y) const;
+  void drawFeatList(const NewMapPack* pk, const NewMapPt* pts, uint32_t n_pts,
+                    const NewMapFeat* feats, uint32_t n_feats, uint8_t phase);
+  void drawAllLists(const NewMapPack* pk, uint8_t phase);
   void drawPack(const NewMapPack* pk);
   void drawNodes();
+  void drawChrome(bool have);
+  void captureSnap();
+  bool blitPanPreview();
   double _clat = 47.68, _clon = -116.78;  // N. Idaho default
   float  _scale = 256.0f;
   bool   _centered_once = false;
+  bool   _tiles_pending = false;
+  int    _pack_i = -1;
+  bool   _panning = false;
+  uint16_t* _snap = nullptr;
+  bool   _snap_ok = false;
+  double _snap_clat = 0, _snap_clon = 0;
+  float  _snap_scale = 0;
+  uint32_t _last_tap_ms = 0;
+  int16_t _last_tap_x = 0, _last_tap_y = 0;
+  bool   _pinching = false;
+  int    _pinch_anchor = 0;
+  bool zoomBy(int dir);
 };
 
 // ---------------------------------------------------------------- Last heard

@@ -78,7 +78,7 @@ still has to be the flasher above — SD updates only work once MeshDeck is runn
 
 ## SD card maps
 
-The map works out of the box with no SD card. For extra detail, copy the
+The classic map works out of the box with no SD card. For extra detail, copy the
 `sdcard/meshdeck-maps/` folder onto a FAT32 SD card (so the card contains
 `/meshdeck-maps/uk.mdm`) and insert it — MeshDeck loads packs at boot, or use
 **Settings → Reload SD map packs**. The included `uk.mdm` is a 10-metre-grade
@@ -89,6 +89,10 @@ python3 tools/gen_sdmap.py <natural-earth-repo> alps.mdm 5.5 43.5 16.5 48.5
 ```
 
 (arguments: lon-min lat-min lon-max lat-max — any region on Earth, up to 4 packs.)
+
+**NewMaps** (separate home-screen app) reads **`.mdv`** files from the same
+`/meshdeck-maps/` folder. Build one with `tools/gen_newmap.py` and see
+**docs/NEWMAPS.md** for format, zoom floors, and controls.
 
 ## First boot
 

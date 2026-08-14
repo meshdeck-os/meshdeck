@@ -55,6 +55,9 @@ Rendered at the T-Deck's native 320×240 display resolution.
 - **SD map packs**: drop `.mdm` files in `/meshdeck-maps/` on an SD card for
   extra high-detail regions - a ready-made UK+Ireland pack is included in
   `sdcard/`, and `tools/gen_sdmap.py` builds packs for any region on Earth
+- **NewMaps** (home tile): OSM street basemap from `.mdv` packs on the same
+  SD folder. Swipe to pan, pinch / double-tap / `+` `-` to zoom. Build packs
+  with `tools/gen_newmap.py` (see **docs/NEWMAPS.md**)
 
 **Mesh power tools**
 - **Last heard** list: signal, RSSI, hops, age and distance of recent stations
@@ -94,6 +97,8 @@ sdcard/meshdeck-maps/  ready-made UK+Ireland high-detail map pack (uk.mdm)
 .github/workflows/     cloud build + web flasher deploy (GitHub Actions)
 tools/gen_mapdata.py   regenerates the built-in map from Natural Earth data
 tools/gen_sdmap.py     builds SD map packs (.mdm) for any region
+tools/gen_newmap.py    builds NewMaps OSM packs (.mdv) for any bbox
+docs/NEWMAPS.md        NewMaps format, zoom floors, and controls
 THIRD_PARTY.md         third-party licenses and notices
 ```
 
