@@ -78,21 +78,45 @@ still has to be the flasher above — SD updates only work once MeshDeck is runn
 
 ## SD card maps
 
-The classic map works out of the box with no SD card. For extra detail, copy the
-`sdcard/meshdeck-maps/` folder onto a FAT32 SD card (so the card contains
-`/meshdeck-maps/uk.mdm`) and insert it — MeshDeck loads packs at boot, or use
-**Settings → Reload SD map packs**. The included `uk.mdm` is a 10-metre-grade
-UK + Ireland coastline pack. To make packs for other regions:
+Two home-screen apps share `/meshdeck-maps/` on a FAT32 card:
+
+| App | Files | Source | Generator |
+|-----|-------|--------|-----------|
+| **Map** (classic) | built-in + optional `.mdm` | Natural Earth coastlines / towns | `tools/gen_sdmap.py` |
+| **NewMaps** | `.mdv` (MDV2 v3) | OpenStreetMap streets / water | `tools/gen_newmap.py` |
+
+Copy the repo's `sdcard/meshdeck-maps/` folder onto the card so it contains
+`/meshdeck-maps/uk.mdm` (and any `.mdv` packs you build). MeshDeck loads packs
+at boot, or use **Settings -> Reload SD map packs**.
+
+### Classic `.mdm` (coastline detail)
+
+The classic map works with no SD card (built-in world + Europe coastlines from
+`tools/gen_mapdata.py`). An `.mdm` adds 10 m-grade coastline and extra town
+labels for a region. The included `uk.mdm` is UK + Ireland. To make another:
 
 ```
-python3 tools/gen_sdmap.py <natural-earth-repo> alps.mdm 5.5 43.5 16.5 48.5
+python tools/gen_sdmap.py <natural-earth-geojson> alps.mdm 5.5 43.5 16.5 48.5
 ```
 
-(arguments: lon-min lat-min lon-max lat-max — any region on Earth, up to 4 packs.)
+Arguments: `lon-min lat-min lon-max lat-max` (optional simplify tolerance last).
+Data: https://github.com/martynafford/natural-earth-geojson
+(needs `10m/physical/ne_10m_coastline.json` and
+`50m/cultural/ne_50m_populated_places_simple.json`). Up to 4 `.mdm` packs load.
 
-**NewMaps** (separate home-screen app) reads **`.mdv`** files from the same
-`/meshdeck-maps/` folder. Build one with `tools/gen_newmap.py` and see
-**docs/NEWMAPS.md** for format, zoom floors, and controls.
+### NewMaps `.mdv` (OSM streets)
+
+Build from a Geofabrik PBF (recommended) or Overpass. A large bbox becomes
+several overlapping `name_00.mdv`, `name_01.mdv`, ... files -- copy all of them.
+
+```
+pip install osmium
+python tools/gen_newmap.py --pbf idaho-latest.osm.pbf --bbox -117.5 46.0 -115.5 49.0 -o sdcard/meshdeck-maps/northern-idaho.mdv
+```
+
+PBF extracts and generated `_NN.mdv` files stay on disk / the SD card; do not
+commit them. Full flags, install steps, controls, and troubleshooting:
+**docs/NEWMAPS.md**.
 
 ## First boot
 

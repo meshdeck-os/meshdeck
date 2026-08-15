@@ -13,7 +13,7 @@ static const float NM_ZOOMS[] = {
 
 // Paper-map palette (RGB565). Hierarchy is width first, then hue.
 #define NM_BG           RGB565(232, 236, 228)   // soft paper land
-#define NM_WATER        RGB565(166, 206, 232)
+#define NM_WATER        RGB565(120, 178, 220)
 #define NM_RIVER        RGB565(86, 148, 196)
 #define NM_RIVER_CASE   RGB565(68, 124, 172)
 #define NM_CANAL        RGB565(100, 164, 204)
@@ -143,11 +143,11 @@ static void nmPolyDash(GFXcanvas16& c, const int* xs, const int* ys, int n,
     nmDash(c, xs[i - 1], ys[i - 1], xs[i], ys[i], col);
 }
 
-// Simple scanline-ish fill for small closed polys (axis-aligned span fill)
+// Scanline fill, clipped to the screen. Large lakes used to be outline-only
+// (and invisible when the shore was off-screen).
 static void nmFillPoly(GFXcanvas16& c, int* xs, int* ys, int n, uint16_t col) {
   if (n < 3) return;
-  // Clip n for stack
-  if (n > 64) n = 64;
+  if (n > 128) n = 128;
   int miny = ys[0], maxy = ys[0];
   for (int i = 1; i < n; i++) {
     if (ys[i] < miny) miny = ys[i];
@@ -156,15 +156,6 @@ static void nmFillPoly(GFXcanvas16& c, int* xs, int* ys, int n, uint16_t col) {
   if (maxy < 0 || miny >= SCREEN_H) return;
   if (miny < 0) miny = 0;
   if (maxy >= SCREEN_H) maxy = SCREEN_H - 1;
-  // Cap work for large areas
-  if (maxy - miny > 120) {
-    // Outline only for huge polys
-    for (int i = 0; i < n; i++) {
-      int j = (i + 1) % n;
-      c.drawLine(xs[i], ys[i], xs[j], ys[j], col);
-    }
-    return;
-  }
   for (int y = miny; y <= maxy; y++) {
     int nx = 0;
     int xint[32];
@@ -176,7 +167,6 @@ static void nmFillPoly(GFXcanvas16& c, int* xs, int* ys, int n, uint16_t col) {
       float t = (float)(y - y0) / (float)(y1 - y0);
       xint[nx++] = x0 + (int)lroundf(t * (x1 - x0));
     }
-    // sort
     for (int a = 0; a + 1 < nx; a++)
       for (int b = a + 1; b < nx; b++)
         if (xint[b] < xint[a]) { int t = xint[a]; xint[a] = xint[b]; xint[b] = t; }
@@ -191,7 +181,7 @@ static void nmFillPoly(GFXcanvas16& c, int* xs, int* ys, int n, uint16_t col) {
 }
 
 void NewMapsScreen::leave() {
-  if (_pack_i >= 0) ui.newmaps.releaseTiles(_pack_i);
+  ui.newmaps.releaseAllTiles();
   _tiles_pending = false;
   _panning = false;
   _snap_ok = false;
@@ -241,6 +231,7 @@ struct LayerStyle {
 
 // Visibility floor so old packs cannot force driveways/streets at region zoom.
 static uint16_t nmStyleFloor(uint8_t layer, uint16_t feat_ms, uint8_t flags) {
+  if (flags & NMF_SIGNED) return 8;  // I / US / state: always on
   uint16_t floor = 0;
   switch (layer) {
     case NML_ROAD_MOTORWAY: return NM_Z_MOTORWAY;
@@ -263,8 +254,8 @@ static uint16_t nmStyleFloor(uint8_t layer, uint16_t feat_ms, uint8_t flags) {
     case NML_LANDUSE_RESIDENTIAL:
     case NML_LANDUSE_INDUSTRIAL: floor = NM_Z_LANDUSE; break;
     case NML_LANDUSE_PARK:
-    case NML_LANDUSE_FOREST: floor = NM_Z_PARK; break;
-    case NML_WATER_AREA:    floor = NM_Z_WATER_AREA; break;
+    case NML_LANDUSE_FOREST: return NM_Z_PARK;
+    case NML_WATER_AREA:    return NM_Z_WATER_AREA;
     default: break;
   }
   return floor > feat_ms ? floor : feat_ms;
@@ -304,11 +295,11 @@ static LayerStyle nmStyle(uint8_t layer, float scale, uint16_t feat_ms, uint8_t 
       s = { NM_INDUSTRIAL, NM_INDUSTRIAL, 0, true, false }; break;
     case NML_WATER_LINE:
       if (feat_ms <= 24)
-        s = { NM_RIVER, NM_RIVER_CASE, w(0, 0, 1, 1, 2), false, false };
+        s = { NM_RIVER, NM_RIVER_CASE, w(0, 1, 1, 2, 3), false, false };
       else if (feat_ms <= 48)
-        s = { NM_CANAL, NM_RIVER_CASE, w(0, 0, 0, 1, 1), false, false };
+        s = { NM_CANAL, NM_RIVER_CASE, w(0, 0, 1, 1, 2), false, false };
       else
-        s = { NM_STREAM, NM_STREAM, w(0, 0, 0, 0, 1), false, false };
+        s = { NM_STREAM, NM_STREAM, w(0, 0, 0, 1, 1), false, false };
       break;
     case NML_RAIL:
       s = { NM_RAIL, NM_RAIL, 0, false, true }; break;
@@ -401,7 +392,8 @@ void NewMapsScreen::drawFeatList(const NewMapPack* pk, const NewMapPt* pts, uint
       if ((phase == NM_PH_ROAD_CASE || phase == NM_PH_HYDRO_CASE) && st.half_w <= 0)
         continue;
 
-      const bool major = (F.layer >= NML_ROAD_TERTIARY && F.layer <= NML_ROAD_MOTORWAY);
+      const bool major = (F.flags & NMF_SIGNED) ||
+                         (F.layer >= NML_ROAD_TERTIARY && F.layer <= NML_ROAD_MOTORWAY);
 
       // Sample along the whole feature so long snaking roads are not dropped
       double fmin_lat = 1e9, fmax_lat = -1e9, fmin_lon = 1e9, fmax_lon = -1e9;
@@ -432,6 +424,34 @@ void NewMapsScreen::drawFeatList(const NewMapPack* pk, const NewMapPt* pts, uint
         if (_scale < 64 && F.count > 40) stride = 4;
         else if (_scale < 128 && F.count > 30) stride = 3;
         else if (_scale < 256 && F.count > 24) stride = 2;
+      }
+
+      // Closed areas (lakes, parks): sample the whole ring. A huge lake's
+      // first 128 verts can all sit off-screen while the water fills the view.
+      if (st.fill_poly && (F.flags & NMF_CLOSED) &&
+          (phase == NM_PH_AREA || phase == NM_PH_BUILDING) && F.count >= 3) {
+        int n = (int)F.count;
+        if (n > 128) n = 128;
+        for (int k = 0; k < n; k++) {
+          uint32_t i = (F.count <= 128) ? (uint32_t)k
+                                       : (uint32_t)k * (F.count - 1) / (uint32_t)(n - 1);
+          double la = pts[F.start + i].lat_s / sc;
+          double lo = pts[F.start + i].lon_s / sc;
+          project(la, lo, xs[k], ys_[k]);
+        }
+        bool covers = (fmin_lat <= lat0 && fmax_lat >= lat1 &&
+                       fmin_lon <= lon0 && fmax_lon >= lon1);
+        if (covers && want == NML_WATER_AREA) {
+          c.fillRect(0, STATUS_H, SCREEN_W, SCREEN_H - STATUS_H, st.fill);
+        } else {
+          nmFillPoly(c, xs, ys_, n, st.fill);
+          for (int k = 0; k < n; k++) {
+            int j = (k + 1) % n;
+            c.drawLine(xs[k], ys_[k], xs[j], ys_[j],
+                       st.cas != st.fill ? st.cas : st.fill);
+          }
+        }
+        continue;
       }
 
       // Window long polylines so stitching does not get chopped at 95 verts
@@ -491,6 +511,7 @@ void NewMapsScreen::drawFeatList(const NewMapPack* pk, const NewMapPt* pts, uint
 }
 
 void NewMapsScreen::drawAllLists(const NewMapPack* pk, uint8_t phase) {
+  if (!pk || !pk->loaded) return;
   drawFeatList(pk, pk->pts, pk->n_points, pk->feats, pk->n_feats, phase);
   if (pk->format == 2) {
     for (int i = 0; i < NEWM_TILE_CACHE; i++) {
@@ -503,7 +524,6 @@ void NewMapsScreen::drawAllLists(const NewMapPack* pk, uint8_t phase) {
 
 void NewMapsScreen::drawPack(const NewMapPack* pk) {
   if (!pk || !pk->loaded) return;
-  // Global casing-then-fill across overview + tiles so junctions meet.
   drawAllLists(pk, NM_PH_AREA);
   drawAllLists(pk, NM_PH_HYDRO_CASE);
   drawAllLists(pk, NM_PH_HYDRO_FILL);
@@ -511,7 +531,10 @@ void NewMapsScreen::drawPack(const NewMapPack* pk) {
   drawAllLists(pk, NM_PH_ROAD_CASE);
   drawAllLists(pk, NM_PH_ROAD_FILL);
   drawAllLists(pk, NM_PH_BUILDING);
+}
 
+void NewMapsScreen::drawPackLabels(const NewMapPack* pk) {
+  if (!pk || !pk->loaded) return;
   // Labels
   if (pk->labels && _scale >= 48) {
     GFXcanvas16& c = ui.cv();
@@ -681,7 +704,7 @@ void NewMapsScreen::drawChrome(bool have) {
 
   c.setTextColor(C_FG_FAINT);
   c.setCursor(90, SCREEN_H - 12);
-  c.print("swipe  pinch  +/-");
+  c.print("long-tap info  +/-");
 
   c.setTextColor(C_FG_FAINT);
   c.setCursor(SCREEN_W - 92, STATUS_H + 2);
@@ -720,13 +743,30 @@ void NewMapsScreen::draw() {
   }
 
   _pack_i = ui.newmaps.packIndexFor(_clat, _clon);
-  const NewMapPack* pk = ui.newmaps.pack(_pack_i);
-  bool have = pk && pk->loaded;
+  int vis[NEWM_MAX_PACKS];
+  int nvis = ui.newmaps.packsIntersecting(lat0, lat1, lon0, lon1, vis, NEWM_MAX_PACKS);
+  bool have = nvis > 0;
   if (have) {
-    bool done = ui.newmaps.ensureTiles(ui.hw, _pack_i, lat0, lat1, lon0, lon1, _scale);
+    bool done = true;
+    for (int i = 0; i < nvis; i++) {
+      if (!ui.newmaps.ensureTiles(ui.hw, vis[i], lat0, lat1, lon0, lon1, _scale))
+        done = false;
+    }
     _tiles_pending = !done;
     if (_tiles_pending) ui.requestDraw();
-    drawPack(pk);
+    // Same phase across every region so roads meet at file edges
+    static const uint8_t kPh[] = {
+      NM_PH_AREA, NM_PH_HYDRO_CASE, NM_PH_HYDRO_FILL, NM_PH_RAIL_PATH,
+      NM_PH_ROAD_CASE, NM_PH_ROAD_FILL, NM_PH_BUILDING
+    };
+    for (unsigned ph = 0; ph < sizeof(kPh); ph++) {
+      for (int i = 0; i < nvis; i++) {
+        const NewMapPack* pk = ui.newmaps.pack(vis[i]);
+        if (pk) drawAllLists(pk, kPh[ph]);
+      }
+    }
+    for (int i = 0; i < nvis; i++)
+      drawPackLabels(ui.newmaps.pack(vis[i]));
   } else {
     c.setTextColor(NM_LABEL);
     c.setTextSize(1);
@@ -741,6 +781,223 @@ void NewMapsScreen::draw() {
   drawNodes();
   drawChrome(have);
   captureSnap();
+  if (_info_on) drawInfoCard();
+}
+
+void NewMapsScreen::screenToLatLon(int x, int y, double& lat, double& lon) const {
+  double ys = _scale / cos(_clat * 0.017453292519943295);
+  lon = _clon + (double)(x - SCREEN_W / 2) / _scale;
+  lat = _clat + (double)(SCREEN_H / 2 - y) / ys;
+}
+
+static float nmDistSeg2(int px, int py, int x0, int y0, int x1, int y1) {
+  int dx = x1 - x0, dy = y1 - y0;
+  int l2 = dx * dx + dy * dy;
+  if (l2 < 1) {
+    int ex = px - x0, ey = py - y0;
+    return (float)(ex * ex + ey * ey);
+  }
+  float t = (float)((px - x0) * dx + (py - y0) * dy) / (float)l2;
+  if (t < 0) t = 0;
+  if (t > 1) t = 1;
+  float ex = (float)x0 + t * (float)dx - (float)px;
+  float ey = (float)y0 + t * (float)dy - (float)py;
+  return ex * ex + ey * ey;
+}
+
+static const char* nmKindName(uint8_t layer, uint8_t flags) {
+  if (flags & NMF_DRIVEWAY) return "Driveway";
+  switch (layer) {
+    case NML_ROAD_MOTORWAY: return "Interstate / motorway";
+    case NML_ROAD_TRUNK:    return "US / state highway";
+    case NML_ROAD_PRIMARY:  return "US / primary highway";
+    case NML_ROAD_SECONDARY:return "State / secondary route";
+    case NML_ROAD_TERTIARY: return "Tertiary / collector";
+    case NML_ROAD_RESIDENTIAL: return "Residential street";
+    case NML_ROAD_SERVICE:  return "Service road";
+    case NML_ROAD_PATH:     return "Path / trail";
+    case NML_RAIL:          return "Railroad";
+    case NML_WATER_LINE:    return "River / stream";
+    case NML_WATER_AREA:    return "Lake / water";
+    case NML_LANDUSE_PARK:  return "Park";
+    case NML_LANDUSE_FOREST:return "Forest";
+    default: return "Map feature";
+  }
+}
+
+struct NmHit {
+  float best = 28.f * 28.f;
+  uint8_t layer = 0xFF;
+  uint8_t flags = 0;
+  uint16_t name_id = 0;
+  const NewMapPack* pk = nullptr;
+};
+
+static void nmScanFeats(const NewMapPack* pk, const NewMapPt* pts, uint32_t n_pts,
+                        const NewMapFeat* feats, uint32_t n_feats,
+                        const NewMapsScreen* scr, int tx, int ty, NmHit& hit) {
+  if (!pk || !pts || !feats) return;
+  const float sc = pk->scale;
+  for (uint32_t fi = 0; fi < n_feats; fi++) {
+    const NewMapFeat& F = feats[fi];
+    if (F.layer < NML_ROAD_PATH || F.layer > NML_ROAD_MOTORWAY) continue;
+    if (F.count < 2 || F.start + F.count > n_pts) continue;
+    int lx = 0, ly = 0;
+    bool have = false;
+    for (uint32_t i = 0; i < F.count; i++) {
+      double la = pts[F.start + i].lat_s / sc;
+      double lo = pts[F.start + i].lon_s / sc;
+      int x, y;
+      scr->project(la, lo, x, y);
+      if (have) {
+        float d = nmDistSeg2(tx, ty, lx, ly, x, y);
+        bool take = false;
+        if (d + 4.f < hit.best) {
+          take = true;
+        } else if (d <= hit.best + 4.f) {
+          const bool ns = (F.flags & NMF_SIGNED) != 0;
+          const bool os = (hit.flags & NMF_SIGNED) != 0;
+          if (ns && !os) take = true;
+          else if (ns == os && F.layer > hit.layer) take = true;
+          else if (ns == os && F.layer == hit.layer && d < hit.best) take = true;
+        }
+        if (take) {
+          hit.best = d;
+          hit.layer = F.layer;
+          hit.flags = F.flags;
+          hit.name_id = F.name_id;
+          hit.pk = pk;
+        }
+      }
+      lx = x; ly = y; have = true;
+    }
+  }
+}
+
+void NewMapsScreen::identifyAt(int x, int y) {
+  double tlat, tlon;
+  screenToLatLon(x, y, tlat, tlon);
+  char ns = tlat >= 0 ? 'N' : 'S';
+  char ew = tlon >= 0 ? 'E' : 'W';
+  snprintf(_info_coord, sizeof(_info_coord), "%.4f %c  %.4f %c",
+           fabs(tlat), ns, fabs(tlon), ew);
+
+  _info_title[0] = 0;
+  _info_sub[0] = 0;
+  _info_kind[0] = 0;
+  _info_place[0] = 0;
+
+  double ys = _scale / cos(_clat * 0.017453292519943295);
+  double half_lon = (SCREEN_W / 2.0) / _scale;
+  double half_lat = (SCREEN_H / 2.0) / ys;
+  int vis[NEWM_MAX_PACKS];
+  int nvis = ui.newmaps.packsIntersecting(
+      _clat - half_lat, _clat + half_lat, _clon - half_lon, _clon + half_lon,
+      vis, NEWM_MAX_PACKS);
+
+  NmHit hit;
+  for (int i = 0; i < nvis; i++) {
+    const NewMapPack* pk = ui.newmaps.pack(vis[i]);
+    if (!pk) continue;
+    nmScanFeats(pk, pk->pts, pk->n_points, pk->feats, pk->n_feats,
+                this, x, y, hit);
+    if (pk->format == 2) {
+      for (int t = 0; t < NEWM_TILE_CACHE; t++) {
+        const NewMapTileSlot& s = pk->cache[t];
+        if (!s.used || !s.pts) continue;
+        nmScanFeats(pk, s.pts, s.n_pts, s.feats, s.n_feats,
+                    this, x, y, hit);
+      }
+    }
+  }
+
+  const NewMapName* named = nullptr;
+  if (hit.pk && hit.name_id && hit.pk->names &&
+      hit.name_id <= hit.pk->n_names)
+    named = &hit.pk->names[hit.name_id - 1];
+
+  if (hit.layer != 0xFF)
+    snprintf(_info_kind, sizeof(_info_kind), "%s", nmKindName(hit.layer, hit.flags));
+  else
+    snprintf(_info_kind, sizeof(_info_kind), "Map location");
+
+  if (named && (named->ref[0] || named->name[0])) {
+    if (named->ref[0])
+      snprintf(_info_title, sizeof(_info_title), "%s", named->ref);
+    if (named->name[0]) {
+      if (_info_title[0] && strcmp(_info_title, named->name) != 0)
+        snprintf(_info_sub, sizeof(_info_sub), "%s", named->name);
+      else if (!_info_title[0])
+        snprintf(_info_title, sizeof(_info_title), "%s", named->name);
+    }
+    if (named->place[0])
+      snprintf(_info_place, sizeof(_info_place), "Near %s", named->place);
+  }
+  if (!_info_title[0])
+    snprintf(_info_title, sizeof(_info_title), "%s",
+             hit.layer != 0xFF ? nmKindName(hit.layer, hit.flags) : "Location");
+
+  if (!_info_place[0]) {
+    float pbest = 1e12f;
+    const char* pname = nullptr;
+    for (int i = 0; i < nvis; i++) {
+      const NewMapPack* pk = ui.newmaps.pack(vis[i]);
+      if (!pk || !pk->labels) continue;
+      const float sc = pk->scale;
+      for (uint32_t li = 0; li < pk->n_labels; li++) {
+        const NewMapLabel& L = pk->labels[li];
+        if (L.kind > 2) continue;
+        int lx, ly;
+        project(L.lat_s / sc, L.lon_s / sc, lx, ly);
+        float d = (float)((lx - x) * (lx - x) + (ly - y) * (ly - y));
+        d += (float)L.kind * 80.f;
+        if (d < pbest) { pbest = d; pname = L.name; }
+      }
+    }
+    if (pname && pbest < 200.f * 200.f)
+      snprintf(_info_place, sizeof(_info_place), "Near %s", pname);
+  }
+
+  _info_on = true;
+  _info_opened = millis();
+}
+
+void NewMapsScreen::drawInfoCard() {
+  GFXcanvas16& c = ui.cv();
+  const int mw = 268, mh = 118;
+  const int mx = (SCREEN_W - mw) / 2;
+  const int my = SCREEN_H - mh - 10;
+  c.fillRoundRect(mx, my, mw, mh, 8, RGB565(255, 255, 250));
+  c.drawRoundRect(mx, my, mw, mh, 8, NM_PRI_CASE);
+  c.fillRect(mx + 8, my + 8, 4, mh - 16, NM_PRI);
+  c.setTextSize(2);
+  c.setTextColor(NM_LABEL);
+  c.setCursor(mx + 20, my + 12);
+  c.print(_info_title);
+  c.setTextSize(1);
+  int yy = my + 34;
+  if (_info_sub[0]) {
+    c.setTextColor(NM_PRI_CASE);
+    c.setCursor(mx + 20, yy);
+    c.print(_info_sub);
+    yy += 12;
+  }
+  c.setTextColor(C_FG_DIM);
+  c.setCursor(mx + 20, yy);
+  c.print(_info_kind);
+  yy += 12;
+  if (_info_place[0]) {
+    c.setTextColor(NM_LABEL);
+    c.setCursor(mx + 20, yy);
+    c.print(_info_place);
+    yy += 12;
+  }
+  c.setTextColor(C_FG_DIM);
+  c.setCursor(mx + 20, yy);
+  c.print(_info_coord);
+  c.setTextColor(C_FG_FAINT);
+  c.setCursor(mx + 20, my + mh - 16);
+  c.print("tap to close");
 }
 
 bool NewMapsScreen::zoomBy(int dir) {
@@ -755,6 +1012,10 @@ bool NewMapsScreen::zoomBy(int dir) {
 }
 
 bool NewMapsScreen::key(uint8_t k) {
+  if (_info_on && (k == 0x1B || k == 0x08 || k == 0x7F || k == 0x0D)) {
+    _info_on = false;
+    return true;
+  }
   // T-Deck prints + on O and - on I. Also accept q/a and symbol-layer + -.
   if (k == '+' || k == '=' || k == 'q' || k == 'Q' || k == ']' ||
       k == 'o' || k == 'O')
@@ -778,6 +1039,9 @@ bool NewMapsScreen::key(uint8_t k) {
 }
 
 bool NewMapsScreen::nav(NavEvent e) {
+  if (_info_on) {
+    if (e == NAV_BACK || e == NAV_SELECT) { _info_on = false; return true; }
+  }
   double ys = _scale / cos(_clat * 0.017453292519943295);
   double dlon = 28.0 / _scale, dlat = 28.0 / ys;
   switch (e) {
@@ -792,6 +1056,29 @@ bool NewMapsScreen::nav(NavEvent e) {
 }
 
 bool NewMapsScreen::touch(const TouchEvent& e) {
+  if (_info_on) {
+    if (e.kind == TouchEvent::LONG) {
+      identifyAt(e.x, e.y);
+      return true;
+    }
+    if (e.kind == TouchEvent::RELEASE && millis() - _info_opened < 600)
+      return true;  // swallow the lift after long-press
+    if (e.kind == TouchEvent::TAP || e.kind == TouchEvent::RELEASE) {
+      _info_on = false;
+      return true;
+    }
+    if (e.kind == TouchEvent::DRAG) {
+      _info_on = false;
+      // fall through to pan
+    } else {
+      return true;
+    }
+  }
+  if (e.kind == TouchEvent::LONG) {
+    identifyAt(e.x, e.y);
+    _panning = false;
+    return true;
+  }
   if (e.kind == TouchEvent::PINCH) {
     _panning = false;
     int dist = e.dy;
@@ -801,13 +1088,13 @@ bool NewMapsScreen::touch(const TouchEvent& e) {
       _pinch_anchor = dist;
       return true;
     }
-    if (dist > _pinch_anchor + _pinch_anchor / 5) {
+    if (dist > _pinch_anchor + _pinch_anchor / 8 + 6) {
       zoomBy(1);
       _pinching = true;
       _pinch_anchor = dist;
       return true;
     }
-    if (dist < _pinch_anchor - _pinch_anchor / 5) {
+    if (dist < _pinch_anchor - _pinch_anchor / 8 - 6) {
       zoomBy(-1);
       _pinching = true;
       _pinch_anchor = dist;
@@ -830,13 +1117,19 @@ bool NewMapsScreen::touch(const TouchEvent& e) {
   if (e.kind == TouchEvent::RELEASE) {
     _panning = false;
     _pinching = false;
+    // Short lift with little travel: treat as tap (double-tap zoom)
+    if (abs(e.dx) < 24 && abs(e.dy) < 24) {
+      TouchEvent t = e;
+      t.kind = TouchEvent::TAP;
+      return touch(t);
+    }
     return true;
   }
   if (e.kind == TouchEvent::TAP) {
     uint32_t now = millis();
-    bool dbl = (now - _last_tap_ms) < 400 &&
-               abs(e.x - _last_tap_x) < 28 &&
-               abs(e.y - _last_tap_y) < 28;
+    bool dbl = (now - _last_tap_ms) < 450 &&
+               abs(e.x - _last_tap_x) < 40 &&
+               abs(e.y - _last_tap_y) < 40;
     _last_tap_ms = now;
     _last_tap_x = e.x;
     _last_tap_y = e.y;

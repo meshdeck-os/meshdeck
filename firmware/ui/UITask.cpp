@@ -385,8 +385,11 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
   if (npacks > 0) {
     for (int i = 0; i < npacks; i++) {
       const NewMapPack* p = newmaps.pack(i);
-      termLog(C_TERM_SYS, "newmap: %s (%u pts, %u feats, %u labels)",
-              p->filename, p->n_points, p->n_feats, p->n_labels);
+      termLog(C_TERM_SYS, "newmap: %s v%u (%u pts, %u feats, %u labels)",
+              p->filename, (unsigned)p->format, p->n_points, p->n_feats, p->n_labels);
+      if (p->format == 1)
+        termLog(C_TERM_SYS, "newmap: %s is MDV1 - rebuild with gen_newmap.py for full routes",
+                p->filename);
     }
   } else if (npacks == 0) {
     termLog(C_TERM_SYS, "sd card: no NewMaps .mdv packs in /meshdeck-maps");

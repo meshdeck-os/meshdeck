@@ -55,9 +55,10 @@ Rendered at the T-Deck's native 320×240 display resolution.
 - **SD map packs**: drop `.mdm` files in `/meshdeck-maps/` on an SD card for
   extra high-detail regions - a ready-made UK+Ireland pack is included in
   `sdcard/`, and `tools/gen_sdmap.py` builds packs for any region on Earth
-- **NewMaps** (home tile): OSM street basemap from `.mdv` packs on the same
-  SD folder. Swipe to pan, pinch / double-tap / `+` `-` to zoom. Build packs
-  with `tools/gen_newmap.py` (see **docs/NEWMAPS.md**)
+- **NewMaps** (home tile): OSM street basemap from `.mdv` packs in the same
+  SD folder. Swipe to pan, pinch / double-tap / `+` `-` to zoom, long-press a
+  road for its name. Large regions split into overlapping `_00.mdv` files.
+  Build packs with `tools/gen_newmap.py` (see **docs/NEWMAPS.md**)
 
 **Mesh power tools**
 - **Last heard** list: signal, RSSI, hops, age and distance of recent stations
@@ -93,12 +94,12 @@ firmware/              the firmware source (drops into MeshCore's examples/)
 platformio.local.ini   build environment (MeshDeck_TDeck_868 / _beta)
 build.sh / flash.sh    one-command build + flash
 webflasher/            your own browser-based flasher page (GitHub Pages)
-sdcard/meshdeck-maps/  ready-made UK+Ireland high-detail map pack (uk.mdm)
+sdcard/meshdeck-maps/  ready-made classic .mdm coastline packs (uk.mdm, ...)
 .github/workflows/     cloud build + web flasher deploy (GitHub Actions)
 tools/gen_mapdata.py   regenerates the built-in map from Natural Earth data
-tools/gen_sdmap.py     builds SD map packs (.mdm) for any region
+tools/gen_sdmap.py     builds classic SD map packs (.mdm) for any region
 tools/gen_newmap.py    builds NewMaps OSM packs (.mdv) for any bbox
-docs/NEWMAPS.md        NewMaps format, zoom floors, and controls
+docs/NEWMAPS.md        how to generate, install, and use NewMaps packs
 THIRD_PARTY.md         third-party licenses and notices
 ```
 
@@ -133,7 +134,8 @@ path are in **FLASHING.md**.
 |-----------|---------|------|
 | [MeshCore](https://github.com/meshcore-dev/MeshCore) | MIT | Mesh stack (fetched at build time) |
 | [Codec2](https://github.com/drowe67/codec2) | **LGPL-2.1** | Speech codec for **beta voice calls only** (`MESHDECK_BETA`); sources in `firmware/codec2/`, full text in `firmware/codec2/COPYING` |
-| [Natural Earth](https://www.naturalearthdata.com/) | Public domain | Offline map data |
+| [Natural Earth](https://www.naturalearthdata.com/) | Public domain | Classic offline map data |
+| [OpenStreetMap](https://www.openstreetmap.org/copyright) | ODbL | NewMaps `.mdv` street packs |
 | [qrcodegen](https://github.com/nayuki/QR-Code-generator) | MIT | QR display |
 
 Full notices and LGPL compliance notes: **[THIRD_PARTY.md](THIRD_PARTY.md)**.

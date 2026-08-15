@@ -239,20 +239,31 @@ NavEvent DeckHW::readNav() {
 
 // ---------------- GT911 touch ----------------
 
-bool DeckHW::gt911Read(uint8_t* buf, uint8_t nbytes) {
-  // status register 0x814E, then 8 bytes per point. Accept a short
-  // read (1 point) so a 2-point request cannot kill single-touch.
-  memset(buf, 0, nbytes);
-  Wire.beginTransmission(_touch_addr);
-  Wire.write(0x81); Wire.write(0x4E);
+static bool gt911RegRead(uint8_t addr, uint16_t reg, uint8_t* dst, uint8_t n) {
+  Wire.beginTransmission(addr);
+  Wire.write((uint8_t)(reg >> 8));
+  Wire.write((uint8_t)(reg & 0xFF));
   if (Wire.endTransmission(false) != 0) return false;
-  Wire.requestFrom(_touch_addr, nbytes);
-  int got = Wire.available();
-  if (got < 9) return false;
-  for (int i = 0; i < got && i < nbytes; i++) buf[i] = Wire.read();
-  if (got < nbytes && (buf[0] & 0x0F) >= 2)
-    buf[0] = (buf[0] & 0xF0) | 1;  // only point 1 is valid
-  if (buf[0] & 0x80) {
+  if (Wire.requestFrom(addr, n) != n) return false;
+  for (uint8_t i = 0; i < n; i++) dst[i] = Wire.read();
+  return true;
+}
+
+bool DeckHW::gt911Read(uint8_t* buf, uint8_t nbytes) {
+  // 0x814E status, then 8-byte points at 0x814F, 0x8157, ...
+  // Read status + each point as separate transactions -- one 17-byte
+  // request often comes back short on this bus and killed 2-finger pinch.
+  memset(buf, 0, nbytes);
+  uint8_t st = 0;
+  if (!gt911RegRead(_touch_addr, 0x814E, &st, 1)) return false;
+  buf[0] = st;
+  uint8_t n = st & 0x0F;
+  if (n > 2) n = 2;
+  for (uint8_t i = 0; i < n && (1 + (i + 1) * 8) <= nbytes; i++) {
+    if (!gt911RegRead(_touch_addr, (uint16_t)(0x814F + i * 8), buf + 1 + i * 8, 8))
+      break;
+  }
+  if (st & 0x80) {
     Wire.beginTransmission(_touch_addr);
     Wire.write(0x81); Wire.write(0x4E); Wire.write(0x00);
     Wire.endTransmission();
@@ -345,7 +356,8 @@ bool DeckHW::readTouch(TouchEvent& ev) {
       return false;
     }
     int16_t ddx = sx - _tx, ddy = sy - _ty;
-    if (abs(sx - _t_start_x) > 8 || abs(sy - _t_start_y) > 8) _t_moved = true;
+    // 18px slop so a slightly messy tap is still a TAP (needed for double-tap)
+    if (abs(sx - _t_start_x) > 18 || abs(sy - _t_start_y) > 18) _t_moved = true;
     _tx = sx; _ty = sy;
     if (_t_moved && (ddx || ddy)) {
       ev.kind = TouchEvent::DRAG;
@@ -365,7 +377,11 @@ bool DeckHW::readTouch(TouchEvent& ev) {
     _touching = false;
     bool was_pinch = _pinch;
     _pinch = false;
-    if (!was_pinch && !_t_moved && !_t_long_fired && millis() - _t_start_ms < 600) {
+    int travel = abs(_tx - _t_start_x);
+    int travely = abs(_ty - _t_start_y);
+    if (travely > travel) travel = travely;
+    if (!was_pinch && !_t_long_fired && travel < 22 &&
+        millis() - _t_start_ms < 500) {
       ev.kind = TouchEvent::TAP;
       ev.x = _tx; ev.y = _ty; ev.dx = 0; ev.dy = 0;
     } else {

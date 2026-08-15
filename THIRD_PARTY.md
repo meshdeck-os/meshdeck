@@ -33,7 +33,8 @@ If you distribute MeshDeck binaries that include the voice/beta build, you must 
 
 | Component | License | Notes |
 |-----------|---------|--------|
-| [Natural Earth](https://www.naturalearthdata.com/) map data | Public domain | Built-in offline map |
+| [Natural Earth](https://www.naturalearthdata.com/) map data | Public domain | Built-in / `.mdm` offline map |
+| [OpenStreetMap](https://www.openstreetmap.org/copyright) | ODbL | NewMaps `.mdv` packs (`tools/gen_newmap.py`) |
 | [qrcodegen](https://github.com/nayuki/QR-Code-generator) | MIT | QR display |
 | Arduino / ESP-IDF / PlatformIO libs | Various | Resolved at build time via PlatformIO |
 

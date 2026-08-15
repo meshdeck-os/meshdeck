@@ -24,6 +24,7 @@ void NewMaps::freePack(NewMapPack& p) {
   if (p.pts) free(p.pts);
   if (p.feats) free(p.feats);
   if (p.labels) free(p.labels);
+  if (p.names) free(p.names);
   for (int i = 0; i < NEWM_MAX_LODS; i++) {
     if (p.lods[i].index) free(p.lods[i].index);
   }
@@ -44,6 +45,30 @@ void NewMaps::releaseTiles(int pack_i) {
 
 static bool readExact(File& f, void* dst, size_t n) {
   return f.read((uint8_t*)dst, n) == (int)n;
+}
+
+// Disk feat size: MDV1 / MDV2 v2 = 12 B; MDV2 v3+ = 14 B (name_id).
+static uint8_t featDiskSize(uint16_t mdv_ver) {
+  return mdv_ver >= NEWM2_VERSION_NAMED ? (uint8_t)sizeof(NewMapFeat) : 12;
+}
+
+static bool readFeatArray(File& f, NewMapFeat* dst, uint32_t n, uint16_t mdv_ver) {
+  if (!n) return true;
+  if (!dst) return false;
+  const uint8_t dsz = featDiskSize(mdv_ver);
+  if (dsz == sizeof(NewMapFeat))
+    return readExact(f, dst, sizeof(NewMapFeat) * n);
+  for (uint32_t i = 0; i < n; i++) {
+    uint8_t buf[12];
+    if (!readExact(f, buf, 12)) return false;
+    dst[i].layer = buf[0];
+    dst[i].flags = buf[1];
+    memcpy(&dst[i].min_scale, buf + 2, 2);
+    memcpy(&dst[i].start, buf + 4, 4);
+    memcpy(&dst[i].count, buf + 8, 4);
+    dst[i].name_id = 0;
+  }
+  return true;
 }
 
 bool NewMaps::loadMdv2(void* filep, NewMapPack* p) {
@@ -125,7 +150,7 @@ bool NewMaps::loadMdv2(void* filep, NewMapPack* p) {
   if (ov_pts || ov_feats) {
     if (!f.seek(ov_off)) return false;
     if (ov_pts && !readExact(f, p->pts, sizeof(NewMapPt) * ov_pts)) return false;
-    if (ov_feats && !readExact(f, p->feats, sizeof(NewMapFeat) * ov_feats))
+    if (ov_feats && !readFeatArray(f, p->feats, ov_feats, p->mdv_ver))
       return false;
   }
   if (nlabels) {
@@ -133,6 +158,27 @@ bool NewMaps::loadMdv2(void* filep, NewMapPack* p) {
     if (!readExact(f, p->labels, sizeof(NewMapLabel) * nlabels)) return false;
     for (uint32_t i = 0; i < nlabels; i++)
       p->labels[i].name[sizeof(p->labels[i].name) - 1] = 0;
+  }
+  uint32_t names_off = r1, nnames = r2;
+  if (nnames > 8000) nnames = 0;
+  p->n_names = nnames;
+  p->names = nullptr;
+  if (nnames && names_off) {
+    p->names = (NewMapName*)psAlloc(sizeof(NewMapName) * nnames);
+    if (!p->names) {
+      p->n_names = 0;
+    } else if (!f.seek(names_off) ||
+               !readExact(f, p->names, sizeof(NewMapName) * nnames)) {
+      free(p->names);
+      p->names = nullptr;
+      p->n_names = 0;
+    } else {
+      for (uint32_t i = 0; i < nnames; i++) {
+        p->names[i].name[sizeof(p->names[i].name) - 1] = 0;
+        p->names[i].ref[sizeof(p->names[i].ref) - 1] = 0;
+        p->names[i].place[sizeof(p->names[i].place) - 1] = 0;
+      }
+    }
   }
   return true;
 }
@@ -165,7 +211,8 @@ bool NewMaps::loadFile(const char* path) {
   p->scale = scale;
   strncpy(p->path, path, sizeof(p->path) - 1);
 
-  if (magic == NEWM2_MAGIC && ver == NEWM2_VERSION) {
+  if (magic == NEWM2_MAGIC && ver >= NEWM2_VERSION && ver <= NEWM2_VERSION_NAMED) {
+    p->mdv_ver = ver;
     ok = loadMdv2(&f, p);
     f.close();
     if (!ok) {
@@ -193,7 +240,7 @@ bool NewMaps::loadFile(const char* path) {
       return false;
     }
     if (npts) ok = readExact(f, p->pts, sizeof(NewMapPt) * npts);
-    if (nfeats) ok = ok && readExact(f, p->feats, sizeof(NewMapFeat) * nfeats);
+    if (nfeats) ok = ok && readFeatArray(f, p->feats, nfeats, /*mdv1*/ 1);
     if (nlabels) ok = ok && readExact(f, p->labels, sizeof(NewMapLabel) * nlabels);
     f.close();
     if (!ok) {
@@ -211,8 +258,9 @@ bool NewMaps::loadFile(const char* path) {
   strncpy(p->filename, base ? base + 1 : path, sizeof(p->filename) - 1);
   p->loaded = true;
   _n++;
-  Serial.printf("[newmap] loaded %s v%u: %u pts %u feats %u labels (%.1f..%.1f, %.1f..%.1f)\n",
-                p->filename, (unsigned)p->format, p->n_points, p->n_feats, p->n_labels,
+  Serial.printf("[newmap] loaded %s v%u.%u: %u pts %u feats %u labels %u names (%.1f..%.1f, %.1f..%.1f)\n",
+                p->filename, (unsigned)p->format, (unsigned)p->mdv_ver,
+                p->n_points, p->n_feats, p->n_labels, p->n_names,
                 p->lat_min, p->lat_max, p->lon_min, p->lon_max);
   return true;
 }
@@ -223,10 +271,15 @@ int NewMaps::load(DeckHW& hw) {
     hw.sdEnd();
     return -1;
   }
+  // Prefer MDV2 region files. A leftover giant MDV1 (800k cap) would
+  // eat RAM and hide the split packs if we loaded it first.
+  char paths[NEWM_MAX_PACKS][96];
+  uint8_t vers[NEWM_MAX_PACKS];
+  int np = 0;
   File dir = SD.open("/meshdeck-maps");
   if (dir && dir.isDirectory()) {
     File f = dir.openNextFile();
-    while (f && _n < NEWM_MAX_PACKS) {
+    while (f && np < NEWM_MAX_PACKS) {
       const char* nm = f.name();
       size_t l = strlen(nm);
       if (!f.isDirectory() && l > 4 && strcasecmp(nm + l - 4, ".mdv") == 0) {
@@ -234,13 +287,29 @@ int NewMaps::load(DeckHW& hw) {
         if (nm[0] == '/') snprintf(path, sizeof(path), "%s", nm);
         else snprintf(path, sizeof(path), "/meshdeck-maps/%s", nm);
         f.close();
-        loadFile(path);
+        File peek = SD.open(path);
+        uint32_t magic = 0;
+        if (peek) {
+          peek.read((uint8_t*)&magic, 4);
+          peek.close();
+        }
+        strncpy(paths[np], path, 95);
+        paths[np][95] = 0;
+        vers[np] = (magic == NEWM2_MAGIC) ? 2 : 1;
+        np++;
       } else {
         f.close();
       }
       f = dir.openNextFile();
     }
     dir.close();
+  }
+  int n2 = 0;
+  for (int i = 0; i < np; i++)
+    if (vers[i] == 2) n2++;
+  for (int i = 0; i < np && _n < NEWM_MAX_PACKS; i++) {
+    if (n2 > 0 && vers[i] != 2) continue;  // skip stale MDV1 when MDV2 exists
+    loadFile(paths[i]);
   }
   hw.sdEnd();
   return _n;
@@ -262,6 +331,29 @@ int NewMaps::packIndexFor(double lat, double lon) const {
 const NewMapPack* NewMaps::packFor(double lat, double lon) const {
   int i = packIndexFor(lat, lon);
   return i >= 0 ? &_packs[i] : nullptr;
+}
+
+bool NewMaps::packIntersects(int i, double lat0, double lat1,
+                             double lon0, double lon1) const {
+  if (i < 0 || i >= _n) return false;
+  const NewMapPack* p = &_packs[i];
+  if (!p->loaded) return false;
+  return !(p->lat_max < lat0 || p->lat_min > lat1 ||
+           p->lon_max < lon0 || p->lon_min > lon1);
+}
+
+int NewMaps::packsIntersecting(double lat0, double lat1, double lon0, double lon1,
+                               int* out, int max_out) const {
+  int n = 0;
+  for (int i = 0; i < _n && n < max_out; i++) {
+    if (packIntersects(i, lat0, lat1, lon0, lon1))
+      out[n++] = i;
+  }
+  return n;
+}
+
+void NewMaps::releaseAllTiles() {
+  for (int i = 0; i < _n; i++) releaseTiles(i);
 }
 
 bool NewMaps::readTile(NewMapPack& p, uint8_t lod, uint16_t tx, uint16_t ty,
@@ -289,7 +381,7 @@ bool NewMaps::readTile(NewMapPack& p, uint8_t lod, uint16_t tx, uint16_t ty,
   NewMapFeat* feats = (NewMapFeat*)psAlloc(sizeof(NewMapFeat) * e.n_feats);
   bool ok = pts && feats &&
             readExact(f, pts, sizeof(NewMapPt) * e.n_pts) &&
-            readExact(f, feats, sizeof(NewMapFeat) * e.n_feats);
+            readFeatArray(f, feats, e.n_feats, p.mdv_ver);
   f.close();
   if (!ok) {
     if (pts) free(pts);

@@ -139,14 +139,18 @@ public:
   bool key(uint8_t c) override;
   bool nav(NavEvent e) override;
   bool touch(const TouchEvent& e) override;
-private:
   void project(double lat, double lon, int& x, int& y) const;
+private:
   void drawFeatList(const NewMapPack* pk, const NewMapPt* pts, uint32_t n_pts,
                     const NewMapFeat* feats, uint32_t n_feats, uint8_t phase);
   void drawAllLists(const NewMapPack* pk, uint8_t phase);
   void drawPack(const NewMapPack* pk);
+  void drawPackLabels(const NewMapPack* pk);
   void drawNodes();
   void drawChrome(bool have);
+  void identifyAt(int x, int y);
+  void drawInfoCard();
+  void screenToLatLon(int x, int y, double& lat, double& lon) const;
   void captureSnap();
   bool blitPanPreview();
   double _clat = 47.68, _clon = -116.78;  // N. Idaho default
@@ -163,6 +167,13 @@ private:
   int16_t _last_tap_x = 0, _last_tap_y = 0;
   bool   _pinching = false;
   int    _pinch_anchor = 0;
+  bool   _info_on = false;
+  char   _info_title[24] = {0};
+  char   _info_sub[24] = {0};
+  char   _info_kind[28] = {0};
+  char   _info_place[24] = {0};
+  char   _info_coord[32] = {0};
+  uint32_t _info_opened = 0;
   bool zoomBy(int dir);
 };
 

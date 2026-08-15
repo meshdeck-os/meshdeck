@@ -23,7 +23,11 @@
  *   LOD0 = overview blob always kept in PSRAM (stitched major roads + water)
  *   LOD1/2 = spatial tiles paged from SD for the current view only
  *   Tile index: u32 off, u32 nbytes, u16 n_pts, u16 n_feats
- *   Tile / overview blob: pts then feats (same NewMapFeat layout, start relative)
+ *   Tile / overview blob: pts then feats (start relative)
+ *   v2 feats: 12 B  { layer, flags, min_scale, start, count }
+ *   v3 feats: 14 B  { ... , u16 name_id }  name_id 1-based into names[], 0=none
+ *   header reserved1 = names_off, reserved2 = n_names (0 if none)
+ *   names: n_names x NewMapName (long-press info; looked up by feat.name_id)
  *
  * flags bit0 = closed polygon
  * min_scale  = minimum px/degree scale to show feature
@@ -37,10 +41,11 @@
 #define NEWM2_MAGIC   0x3256444Du   // "MDV2"
 #define NEWM_VERSION  1
 #define NEWM2_VERSION 2
-#define NEWM_MAX_PACKS 2
+#define NEWM2_VERSION_NAMED 3   // feats carry name_id
+#define NEWM_MAX_PACKS 16   // region files; draw all that intersect the view
 #define NEWM_MAX_LODS  3
-#define NEWM_TILE_CACHE 9
-#define NEWM_MAX_LOAD_PER_FRAME 2
+#define NEWM_TILE_CACHE 12
+#define NEWM_MAX_LOAD_PER_FRAME 4
 
 // Client zoom floors (px / deg lon). Pack min_scale may be lower; the
 // renderer and tile pager use the stricter of the two so zoomed-out
@@ -49,7 +54,7 @@
 #define NM_Z_PRIMARY    16
 #define NM_Z_SECONDARY  16
 #define NM_Z_TERTIARY   24
-#define NM_Z_RESIDENT   512
+#define NM_Z_RESIDENT   384
 #define NM_Z_SERVICE    1024
 #define NM_Z_DRIVEWAY   2048
 #define NM_Z_PATH       1536
@@ -59,9 +64,9 @@
 #define NM_Z_STREAM     512
 #define NM_Z_BUILDING   1536
 #define NM_Z_LANDUSE    384
-#define NM_Z_PARK       96
-#define NM_Z_WATER_AREA 16
-#define NM_Z_LOD1       512    // do not page residential tiles before this
+#define NM_Z_PARK       16
+#define NM_Z_WATER_AREA 8
+#define NM_Z_LOD1       384    // do not page residential tiles before this
 #define NM_Z_LOD2       1024   // service / path / buildings
 
 // Drawing layers (draw order = ascending id for most, roads reordered in screen)
@@ -87,6 +92,7 @@ enum NewMapLayer : uint8_t {
 
 #define NMF_CLOSED   0x01
 #define NMF_DRIVEWAY 0x02   // service=driveway/alley/parking (thinner than service)
+#define NMF_SIGNED   0x04   // I / US / state numbered route; always in overview
 
 struct NewMapPt {
   int32_t lat_s;
@@ -99,7 +105,9 @@ struct NewMapFeat {
   uint16_t min_scale;   // show when view scale >= this
   uint32_t start;
   uint32_t count;
+  uint16_t name_id;     // 0 = unnamed; 1-based index into pack->names
 } __attribute__((packed));
+static_assert(sizeof(NewMapFeat) == 14, "NewMapFeat is 14 bytes (MDV2 v3)");
 
 struct NewMapLabel {
   int32_t lat_s;
@@ -107,6 +115,16 @@ struct NewMapLabel {
   uint8_t kind;         // 0=city 1=town 2=village 3=hamlet 4=suburb
   uint8_t min_scale_div; // min_scale stored as scale/4 (0..255 -> 0..1020)
   char    name[20];
+} __attribute__((packed));
+
+struct NewMapName {
+  int32_t lat_s;
+  int32_t lon_s;
+  uint8_t layer;
+  uint8_t flags;
+  char    name[20];
+  char    ref[10];
+  char    place[16];    // "Moscow, ID" when known
 } __attribute__((packed));
 
 struct NewMapTileIdx {
@@ -138,14 +156,16 @@ struct NewMapTileSlot {
 struct NewMapPack {
   bool loaded = false;
   uint8_t format = 1;          // 1 = MDV1, 2 = MDV2
+  uint16_t mdv_ver = 0;        // MDV2 file version (2 or 3)
   char filename[40] = {0};
   char path[96] = {0};
   float lat_min = 0, lat_max = 0, lon_min = 0, lon_max = 0;
   float scale = 1;
-  uint32_t n_points = 0, n_feats = 0, n_labels = 0;
+  uint32_t n_points = 0, n_feats = 0, n_labels = 0, n_names = 0;
   NewMapPt*    pts = nullptr;     // MDV1 all pts, or MDV2 overview pts
   NewMapFeat*  feats = nullptr;
   NewMapLabel* labels = nullptr;
+  NewMapName*  names = nullptr;
   uint8_t n_lods = 0;
   NewMapLod lods[NEWM_MAX_LODS];
   NewMapTileSlot cache[NEWM_TILE_CACHE];
@@ -164,6 +184,10 @@ public:
   int packIndexFor(double lat, double lon) const;
   // Prefer pack covering (lat,lon); else first loaded
   const NewMapPack* packFor(double lat, double lon) const;
+  bool packIntersects(int i, double lat0, double lat1, double lon0, double lon1) const;
+  int packsIntersecting(double lat0, double lat1, double lon0, double lon1,
+                        int* out, int max_out) const;
+  void releaseAllTiles();
 
   // Page visible tiles for a MDV2 pack. Call while the display SPI is idle
   // (start of NewMapsScreen::draw is fine: canvas is in PSRAM).
