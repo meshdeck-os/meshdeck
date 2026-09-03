@@ -1,12 +1,14 @@
 #include "AllScreens.h"
 #include "../MyMesh.h"
 #include <helpers/TxtDataHelpers.h>
+#include <string.h>
 
 enum SetItem : int {
   SI_NAME = 0, SI_FREQ, SI_SF, SI_BW, SI_CR, SI_PATHMODE, SI_POWER, SI_PRESET,
   SI_BRIGHT, SI_TIMEOUT, SI_TZ, SI_ALWAYS, SI_SOUND, SI_VOL, SI_FLIP, SI_TOUCHMAP, SI_TBSPEED, SI_ADVINT, SI_ADVMOVE, SI_SOSEN, SI_PWRSAVE, SI_BIGTEXT,
   SI_GPS, SI_WIFISSID, SI_WIFIPASS, SI_WIFI, SI_LOCPOL, SI_MANLAT, SI_MANLON, SI_AUTOADD,
-  SI_ADVERT, SI_ADVERTF, SI_CLEARMSG, SI_DLMAP, SI_SDPREP, SI_SDMAPS, SI_SDUPDATE, SI_ABOUT,
+  SI_ROOMTRIES,
+  SI_ADVERT, SI_ADVERTF, SI_CLEARMSG, SI_CLEARCONTACTS, SI_DLMAP, SI_SDPREP, SI_SDMAPS, SI_SDUPDATE, SI_ABOUT,
   SI_COUNT
 };
 
@@ -14,15 +16,66 @@ static const char* LABELS[SI_COUNT] = {
   "Node name", "Frequency (MHz)", "Spreading factor", "Bandwidth (kHz)", "Coding rate", "Path mode (bytes/hop)", "TX power (dBm)", "Radio preset setup",
   "Brightness", "Screen timeout (s)", "Time zone (UTC+)", "Always-on clock", "Sounds", "Volume", "Flip display", "Touch mapping", "Trackball speed", "Auto-advert (min)", "Advert on move (m)", "SOS beacon", "Power saver", "Large chat text",
   "GPS module", "WiFi network (SSID)", "WiFi password", "WiFi connect", "Share location in advert", "Manual latitude", "Manual longitude", "Auto-add contacts",
-  "Send advert (0-hop)", "Send advert (flood)", "Clear message history", "Download maps (WiFi)", "Prepare SD (maps folder)", "Reload SD map packs", "Update firmware from SD", "About"
+  "Room auto-login tries",
+  "Send advert (0-hop)", "Send advert (flood)", "Clear message history", "Delete all contacts", "Download maps (WiFi)", "Prepare SD (maps folder)", "Reload SD map packs", "Update firmware from SD", "About"
 };
 
 #define S_ROW_H 18
-#define S_TOP (STATUS_H + 4)
-#define S_VIS ((SCREEN_H - S_TOP - 4) / S_ROW_H)
+#define S_FILT_H 18
+#define S_TOP (STATUS_H + 1 + S_FILT_H)
+#define S_VIS ((SCREEN_H - S_TOP - 14) / S_ROW_H)
+
+// case-insensitive substring match (same idea as Contacts)
+static bool labelMatches(const char* name, const char* filt) {
+  if (!filt || !filt[0]) return true;
+  if (!name) return false;
+  for (const char* p = name; *p; p++) {
+    const char* a = p;
+    const char* b = filt;
+    while (*a && *b) {
+      char ca = *a, cb = *b;
+      if (ca >= 'A' && ca <= 'Z') ca = (char)(ca - 'A' + 'a');
+      if (cb >= 'A' && cb <= 'Z') cb = (char)(cb - 'A' + 'a');
+      if (ca != cb) break;
+      a++; b++;
+    }
+    if (!*b) return true;
+  }
+  return false;
+}
+
+void SettingsScreen::rebuildFilter() {
+  _fn = 0;
+  if (_flen < 0) _flen = 0;
+  if (_flen >= (int)sizeof(_filter)) _flen = (int)sizeof(_filter) - 1;
+  _filter[_flen] = 0;
+  const char* filt = (_flen > 0) ? _filter : "";
+  for (int i = 0; i < SI_COUNT && _fn < FMAP_MAX; i++) {
+    if (labelMatches(LABELS[i], filt))
+      _fmap[_fn++] = i;
+  }
+  if (_sel >= _fn) _sel = _fn ? _fn - 1 : 0;
+  if (_sel < 0) _sel = 0;
+  if (_top > _sel) _top = _sel;
+  if (_top < 0) _top = 0;
+}
+
+int SettingsScreen::realItem() const {
+  if (_sel < 0 || _sel >= _fn) return -1;
+  return _fmap[_sel];
+}
 
 void SettingsScreen::enter() {
   _editing = false;
+  if (_flen <= 0) {
+    _flen = 0;
+    memset(_filter, 0, sizeof(_filter));
+  } else {
+    _filter[_flen] = 0;
+  }
+  _sel = 0;
+  _top = 0;
+  rebuildFilter();
 }
 
 static bool isTextItem(int i) {
@@ -33,16 +86,48 @@ static bool isTextItem(int i) {
 void SettingsScreen::draw() {
   GFXcanvas16& c = ui.cv();
   c.fillScreen(C_BG);
-  ui.drawStatusBar("Settings");
+  rebuildFilter();
+
+  char title[36];
+  if (_flen)
+    snprintf(title, sizeof(title), "Settings (%d match)", _fn);
+  else
+    snprintf(title, sizeof(title), "Settings");
+  ui.drawStatusBar(title);
   c.setTextSize(1);
+
+  // ---- filter field (like Contacts) ----
+  c.fillRect(0, STATUS_H + 1, SCREEN_W, S_FILT_H, C_BG_ALT);
+  c.setTextColor(C_FG_FAINT);
+  c.setCursor(6, STATUS_H + 6);
+  c.print("Filter:");
+  c.setTextColor(C_FG);
+  c.setCursor(50, STATUS_H + 6);
+  if (_flen == 0) {
+    c.setTextColor(C_FG_FAINT);
+    c.print(_editing ? "" : "(type to search)");
+  } else {
+    c.print(_filter);
+    int cx = 50 + _flen * 6;
+    c.fillRect(cx + 1, STATUS_H + 5, 2, 10, C_ACCENT);
+  }
+  c.drawFastHLine(0, S_TOP - 1, SCREEN_W, C_FG_FAINT);
+
+  if (_fn == 0) {
+    c.setTextColor(C_FG_FAINT);
+    c.setCursor(40, 120);
+    c.print("No matches for filter");
+    return;
+  }
 
   if (_sel < _top) _top = _sel;
   if (_sel >= _top + S_VIS) _top = _sel - S_VIS + 1;
 
   NodePrefs* p = ui.prefs;
-  for (int i = _top; i < SI_COUNT && i < _top + S_VIS; i++) {
-    int y = S_TOP + (i - _top) * S_ROW_H;
-    bool sel = i == _sel;
+  for (int fi = _top; fi < _fn && fi < _top + S_VIS; fi++) {
+    int i = _fmap[fi];
+    int y = S_TOP + (fi - _top) * S_ROW_H;
+    bool sel = fi == _sel;
     if (sel) c.fillRoundRect(2, y - 1, SCREEN_W - 4, S_ROW_H - 1, 4, C_BG_RAISED);
     c.setTextColor(sel ? C_FG : C_FG_DIM);
     c.setCursor(8, y + 4);
@@ -65,6 +150,7 @@ void SettingsScreen::draw() {
       case SI_PWRSAVE: strcpy(v, (ui.set.reserved[1] & 1) ? "on" : "off"); break;
       case SI_BIGTEXT: strcpy(v, (ui.set.reserved[1] & 2) ? "on" : "off"); break;
       case SI_CLEARMSG: strcpy(v, ">"); break;
+      case SI_CLEARCONTACTS: strcpy(v, ">"); break;
       case SI_ALWAYS:  strcpy(v, ui.set.always_on ? "on" : "off"); break;
       case SI_SOUND:   strcpy(v, ui.set.sounds ? "on" : "off"); break;
       case SI_VOL:     snprintf(v, sizeof(v), "%d/10", ui.set.volume); break;
@@ -83,12 +169,13 @@ void SettingsScreen::draw() {
       case SI_MANLAT:  snprintf(v, sizeof(v), "%.5f", ui.set.man_lat / 1000000.0); break;
       case SI_MANLON:  snprintf(v, sizeof(v), "%.5f", ui.set.man_lon / 1000000.0); break;
       case SI_AUTOADD: strcpy(v, (p->manual_add_contacts & 1) ? "manual" : "auto"); break;
+      case SI_ROOMTRIES: snprintf(v, sizeof(v), "%d", ui.autoLoginMaxTries()); break;
       case SI_SDMAPS:  snprintf(v, sizeof(v), "%d loaded  >", ui.sdmaps.count()); break;
       case SI_ADVERT: case SI_ADVERTF: case SI_SDUPDATE: strcpy(v, ">"); break;
       case SI_ABOUT:   snprintf(v, sizeof(v), "v%s", MESHDECK_VERSION); break;
     }
 
-    if (_editing && i == _sel) {
+    if (_editing && fi == _sel) {
       _edit[_elen] = 0;
       c.fillRect(SCREEN_W - 130, y, 126, S_ROW_H - 2, C_BG);
       c.drawRect(SCREEN_W - 130, y, 126, S_ROW_H - 2, C_ACCENT);
@@ -111,12 +198,13 @@ void SettingsScreen::draw() {
   // hint bar
   c.setTextColor(C_FG_FAINT);
   c.setCursor(6, SCREEN_H - 10);
+  int item = realItem();
   if (_editing) {
     c.setTextColor(ui.symShift() ? C_CYAN : C_FG_FAINT);
     c.print(ui.symShift() ? "123 mode (ball=letters)  enter=apply"
                           : "roll ball for 123/symbols  enter=apply");
   }
-  else if (_sel == SI_TBSPEED) {
+  else if (item == SI_TBSPEED) {
     // live input test: roll the ball, click it, press keys - watch this update
     bool btn, touch; int px, py; uint8_t key;
     ui.hw.inputDebug(btn, px, py, key, touch);
@@ -127,14 +215,16 @@ void SettingsScreen::draw() {
              ui.hw.hasKeyboard() ? "Y" : "N", touch ? "Y" : "N");
     c.print(dbg);
   }
-  else if (isTextItem(_sel)) c.print("enter = edit value");
-  else c.print("left/right = change   enter = action");
+  else if (item >= 0 && isTextItem(item)) c.print("type=filter  enter=edit");
+  else c.print("type=filter  L/R=change  enter=action");
 }
 
 void SettingsScreen::adjust(int dir) {
+  int item = realItem();
+  if (item < 0) return;
   NodePrefs* p = ui.prefs;
   bool radio = false;
-  switch (_sel) {
+  switch (item) {
     case SI_SF:    p->sf = constrain(p->sf + dir, 7, 12); radio = true; break;
     case SI_CR:    p->cr = constrain(p->cr + dir, 5, 8); radio = true; break;
     case SI_PATHMODE: p->path_hash_mode = constrain(p->path_hash_mode + dir, 0, 2); break;
@@ -164,6 +254,16 @@ void SettingsScreen::adjust(int dir) {
     }
     case SI_TZ:     ui.set.tz_offset = constrain(ui.set.tz_offset + dir, -12, 14); break;
     case SI_SOSEN:  ui.set.sos_disabled = !ui.set.sos_disabled; break;
+    case SI_ADVMOVE: {
+      static const uint8_t MVS[] = { 0, 3, 5, 10, 15, 25 };   // units of 10 m
+      int ii = 0;
+      for (int i = 0; i < 6; i++) if (ui.set.reserved[0] == MVS[i]) ii = i;
+      ii = constrain(ii + dir, 0, 5);
+      ui.set.reserved[0] = MVS[ii];
+      break;
+    }
+    case SI_PWRSAVE: ui.set.reserved[1] ^= 1; break;
+    case SI_BIGTEXT: ui.set.reserved[1] ^= 2; break;
     case SI_ALWAYS: ui.set.always_on = !ui.set.always_on; break;
     case SI_SOUND:  ui.set.sounds = !ui.set.sounds; ui.hw.setSound(ui.set.sounds, ui.set.volume); break;
     case SI_VOL:
@@ -192,16 +292,6 @@ void SettingsScreen::adjust(int dir) {
       ui.set.adv_interval_min = IVS[ii];
       break;
     }
-    case SI_ADVMOVE: {
-      static const uint8_t MVS[] = { 0, 3, 5, 10, 15, 25 };   // units of 10 m
-      int ii = 0;
-      for (int i = 0; i < 6; i++) if (ui.set.reserved[0] == MVS[i]) ii = i;
-      ii = constrain(ii + dir, 0, 5);
-      ui.set.reserved[0] = MVS[ii];
-      break;
-    }
-    case SI_PWRSAVE: ui.set.reserved[1] ^= 1; break;
-    case SI_BIGTEXT: ui.set.reserved[1] ^= 2; break;
     case SI_GPS:
       p->gps_enabled = p->gps_enabled ? 0 : 1;
       if (p->gps_enabled && p->gps_interval == 0) p->gps_interval = 5;
@@ -211,6 +301,13 @@ void SettingsScreen::adjust(int dir) {
       break;
     case SI_LOCPOL: p->advert_loc_policy = p->advert_loc_policy ? 0 : 1; break;
     case SI_AUTOADD: p->manual_add_contacts ^= 1; break;
+    case SI_ROOMTRIES: {
+      int t = (int)ui.set.room_login_tries + dir;
+      if (t < 1) t = 1;
+      if (t > (int)UITask::AUTO_LOGIN_TRIES_MAX) t = UITask::AUTO_LOGIN_TRIES_MAX;
+      ui.set.room_login_tries = (uint8_t)t;
+      break;
+    }
     default: return;
   }
   if (radio) ui.mesh->applyRadioPrefs();
@@ -219,8 +316,11 @@ void SettingsScreen::adjust(int dir) {
 }
 
 void SettingsScreen::select() {
+  int item = realItem();
+  if (item < 0) return;
+  // Temporarily use item as selection for the switch body
   NodePrefs* p = ui.prefs;
-  switch (_sel) {
+  switch (item) {
     case SI_NAME:
       _editing = true;
       StrHelper::strncpy(_edit, p->node_name, sizeof(_edit));
@@ -248,6 +348,23 @@ void SettingsScreen::select() {
       ui.store.clearAll();
       ui.toast("Message history cleared", C_YELLOW);
       break;
+    case SI_CLEARCONTACTS: {
+      if (!ui.mesh) break;
+      int n = ui.mesh->getNumContacts();
+      int removed = 0;
+      // Walk backwards so indices stay valid while deleting
+      for (int i = n - 1; i >= 0; i--) {
+        ContactInfo ct;
+        if (ui.mesh->getContactByIdx(i, ct)) {
+          if (ui.mesh->removeContact(ct)) removed++;
+        }
+      }
+      ui.mesh->saveContacts();
+      char buf[40];
+      snprintf(buf, sizeof(buf), "Deleted %d contacts", removed);
+      ui.toast(buf, C_YELLOW);
+      break;
+    }
     case SI_WIFISSID:
       _editing = true;
       StrHelper::strncpy(_edit, ui.wifiSsid(), sizeof(_edit));
@@ -288,6 +405,11 @@ void SettingsScreen::select() {
     }
     case SI_ABOUT:
       ui.termLog(C_TERM_SYS, "MeshDeck v%s | MeshCore %s | built " FIRMWARE_BUILD_DATE, MESHDECK_VERSION, FIRMWARE_VERSION);
+      ui.termLog(C_TERM_SYS, "License: MIT (MeshDeck) - see LICENSE / THIRD_PARTY.md");
+#ifdef MESHDECK_BETA
+      ui.termLog(C_TERM_SYS,
+                 "Voice: Codec2 (LGPL-2.1) - firmware/codec2/COPYING");
+#endif
       ui.toast("MeshDeck v" MESHDECK_VERSION " - see terminal");
       break;
     default:
@@ -298,8 +420,9 @@ void SettingsScreen::select() {
 
 void SettingsScreen::applyEdit() {
   _edit[_elen] = 0;
+  int item = realItem();
   NodePrefs* p = ui.prefs;
-  switch (_sel) {
+  switch (item) {
     case SI_NAME:
       if (_elen > 0) {
         StrHelper::strncpy(p->node_name, _edit, sizeof(p->node_name));
@@ -360,6 +483,31 @@ bool SettingsScreen::key(uint8_t k) {
     return true;
   }
   if (k == 0x0D) { select(); return true; }
+  // Backspace: trim filter, or leave screen if empty
+  if (k == 0x08 || k == 0x7F) {
+    if (_flen > 0) {
+      _filter[--_flen] = 0;
+      rebuildFilter();
+      return true;
+    }
+    return false;  // empty filter -> back
+  }
+  if (k == 0x1B) {  // Esc clears filter
+    if (_flen > 0) {
+      _flen = 0;
+      _filter[0] = 0;
+      rebuildFilter();
+      return true;
+    }
+    return false;
+  }
+  // Printable -> filter text (same as Contacts)
+  if (k >= 32 && k < 127 && _flen < (int)sizeof(_filter) - 1) {
+    _filter[_flen++] = (char)k;
+    _filter[_flen] = 0;
+    rebuildFilter();
+    return true;
+  }
   return false;
 }
 
@@ -373,12 +521,21 @@ bool SettingsScreen::nav(NavEvent e) {
     if (e == NAV_DOWN &&  ui.symShift()) ui.toggleSym();
     return true;
   }
+  rebuildFilter();
   switch (e) {
     case NAV_UP:    if (_sel > 0) _sel--; return true;
-    case NAV_DOWN:  if (_sel < SI_COUNT - 1) _sel++; return true;
+    case NAV_DOWN:  if (_sel < _fn - 1) _sel++; return true;
     case NAV_LEFT:  adjust(-1); return true;
     case NAV_RIGHT: adjust(1); return true;
     case NAV_SELECT: select(); return true;
+    case NAV_BACK:
+      if (_flen > 0) {
+        _flen = 0;
+        _filter[0] = 0;
+        rebuildFilter();
+        return true;
+      }
+      return false;
     default: return false;
   }
 }

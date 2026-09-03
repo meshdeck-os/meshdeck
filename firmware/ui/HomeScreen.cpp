@@ -14,26 +14,25 @@ static const AppDef APPS[] = {
   { "Heard",     SCR_LASTHEARD, C_YELLOW, 'H', false },
   { "Repeaters", SCR_REPEATERS, C_ORANGE, 'R', false },
   { "Map",       SCR_MAP,       C_CYAN,   'M', false },
+  { "NewMaps",   SCR_NEWMAPS,   C_GREEN,  'N', false },   // OSM multi-layer vector
   { "Radio",     SCR_DIAG,      C_GREEN,  'i', false },   // diagnostics
   { "Trace",     SCR_TRACE,     C_PURPLE, 'T', false },
-  { "Noise",     SCR_NOISE,     C_PINK,   'N', false },
+  { "Noise",     SCR_NOISE,     C_PINK,   '~', false },
   { "Terminal",  SCR_TERMINAL,  C_FG,     '>', false },
   { "SOS",       SCR_SOS,       C_RED,    '!', false },
   { "Settings",  SCR_SETTINGS,  C_FG_DIM, 'S', false },
   { "WiFi",      SCR_WIFI,      C_ACCENT, 'W', false },
   { "Channels",  SCR_CHANNELS,  C_ORANGE, '#', false },
-#ifdef MESHDECK_BETA
-  { "Voice",     SCR_VOICE,     C_PINK,   'V', false },   // beta: audio PoC
-#endif
 };
 #define N_APPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
 
-// grid layout: 5 rows x 3 cols
+// grid layout: 5 rows x 3 cols (15 cells; N_APPS must fit)
+// GRID_Y0 must sit below GPS/WiFi line (baseline ~86 + 8px font ~ 94)
 #define GRID_X0   14
-#define GRID_Y0   98
+#define GRID_Y0   100
 #define GRID_ROWS 5
 #define CELL_W    100
-#define CELL_H    28
+#define CELL_H    27   // 100 + 5*27 = 235 < 240
 
 // open an app tile: Discover sends a flood advert first, everything else just navigates
 static void openApp(UITask& ui, int i) {
@@ -121,7 +120,8 @@ void HomeScreen::draw() {
     int total_w = (strlen(g) + 3 + strlen(w)) * 6;   // GPS + "   " + WiFi
     int x = SCREEN_W / 2 - total_w / 2;
     if (x < 6) x = 6;
-    c.setCursor(x, 88);
+    // Keep above app grid (GRID_Y0); leave a few px of air
+    c.setCursor(x, 86);
     c.setTextColor(gcol);   c.print(g);
     c.setTextColor(C_FG_FAINT); c.print("   ");
     c.setTextColor(wcol);   c.print(w);
@@ -141,17 +141,20 @@ void HomeScreen::draw() {
     bool sel = slot == _sel;
     bool hid = _edit && _hidden[a];
     bool grabbed = _edit && _grab == slot;
-    c.fillRoundRect(gx, gy, CELL_W - 8, CELL_H - 5, 6, sel ? C_BG_RAISED : C_BG_ALT);
-    if (sel) c.drawRoundRect(gx, gy, CELL_W - 8, CELL_H - 5, 6, grabbed ? C_YELLOW : APPS[a].color);
-    c.fillRoundRect(gx + 5, gy + 5, 20, 20, 5, hid ? C_FG_FAINT : APPS[a].color);
+    const int tile_h = CELL_H - 4;
+    c.fillRoundRect(gx, gy, CELL_W - 8, tile_h, 5, sel ? C_BG_RAISED : C_BG_ALT);
+    if (sel) c.drawRoundRect(gx, gy, CELL_W - 8, tile_h, 5, grabbed ? C_YELLOW : APPS[a].color);
+    // glyph badge (slightly smaller so CELL_H=27 still looks balanced)
+    c.fillRoundRect(gx + 5, gy + 3, 18, 18, 4, hid ? C_FG_FAINT : APPS[a].color);
     c.setTextSize(2);
     c.setTextColor(C_BG);
-    c.setCursor(gx + 9, gy + 8);
+    c.setCursor(gx + 8, gy + 5);
     c.write(APPS[a].glyph);
     c.setTextSize(1);
     c.setTextColor(hid ? C_FG_FAINT : (sel ? C_FG : C_FG_DIM));
-    c.setCursor(gx + 30, gy + 11);
+    c.setCursor(gx + 28, gy + 9);
     c.print(APPS[a].label);
+    // unread badge on chat
     if (!_edit && APPS[a].scr == SCR_CHAT) {
       int u = ui.store.totalUnread();
       if (u > 0) {
