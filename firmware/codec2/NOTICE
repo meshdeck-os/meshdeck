@@ -1,0 +1,14 @@
+Codec2
+======
+
+This directory contains source code from the Codec2 project
+(https://github.com/drowe67/codec2), used by MeshDeck OS for optional
+experimental voice features (MESHDECK_BETA builds only).
+
+License: GNU Lesser General Public License version 2.1 (LGPL-2.1)
+See the file COPYING in this directory for the full license text.
+
+Codec2 copyright and authorship remain with David Rowe and the Codec2
+contributors. This code is not licensed under the MeshDeck MIT license.
+
+Upstream: http://rowetel.com/codec2.html

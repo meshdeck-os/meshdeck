@@ -22,6 +22,14 @@ SOFTWARE.
 
 ---
 
-MeshDeck OS is built on the open-source MeshCore stack
-(https://github.com/meshcore-dev/MeshCore), which is also MIT-licensed.
-MeshCore is fetched at build time and is not redistributed in this repository.
+## Third-party components
+
+MeshDeck OS application code is MIT-licensed as above.
+
+This project also incorporates other open-source software under their own
+licenses (for example MeshCore under MIT, and Codec2 under LGPL-2.1 for
+optional beta voice builds). Those components are **not** re-licensed by this
+file.
+
+See **THIRD_PARTY.md** for the full list, notices, and compliance notes.
+Codec2 license text: **firmware/codec2/COPYING**.

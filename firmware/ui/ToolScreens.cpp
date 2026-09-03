@@ -7,17 +7,16 @@
 // ============================================================ Last heard
 
 #define LH_ROW_H 22
-#define LH_TOP (STATUS_H + 14)
-#define LH_VIS ((SCREEN_H - LH_TOP) / LH_ROW_H)
-
+#define LH_TOP   (STATUS_H + 14)
+#define LH_VIS   ((SCREEN_H - LH_TOP) / LH_ROW_H)
 static double distKm(double lat1, double lon1, double lat2, double lon2) {
   double dlat = (lat2 - lat1) * 0.0174533;
   double dlon = (lon2 - lon1) * 0.0174533;
   double a = sin(dlat / 2) * sin(dlat / 2) +
-             cos(lat1 * 0.0174533) * cos(lat2 * 0.0174533) * sin(dlon / 2) * sin(dlon / 2);
+             cos(lat1 * 0.0174533) * cos(lat2 * 0.0174533) *
+             sin(dlon / 2) * sin(dlon / 2);
   return 6371.0 * 2 * atan2(sqrt(a), sqrt(1 - a));
 }
-
 void LastHeardScreen::draw() {
   GFXcanvas16& c = ui.cv();
   c.fillScreen(C_BG);
@@ -36,6 +35,12 @@ void LastHeardScreen::draw() {
     return;
   }
 
+  // keep selection in range
+  if (_sel < 0) _sel = 0;
+  if (_sel >= n) _sel = n - 1;
+  if (_sel < _top) _top = _sel;
+  if (_sel >= _top + LH_VIS) _top = _sel - LH_VIS + 1;
+
   double slat, slon;
   bool have_pos = ui.ownPos(slat, slon);
 
@@ -43,15 +48,18 @@ void LastHeardScreen::draw() {
     const HeardEntry* e = ui.heardAt(i);
     if (!e) continue;
     int y = LH_TOP + (i - _top) * LH_ROW_H;
-    c.fillRoundRect(2, y, SCREEN_W - 4, LH_ROW_H - 2, 4, C_BG_ALT);
+
+    bool selected = (i == _sel);
+    c.fillRoundRect(2, y, SCREEN_W - 4, LH_ROW_H - 2, 4,
+                    selected ? C_ACCENT_DK : C_BG_ALT);
 
     uint16_t tc = e->type == ADV_TYPE_REPEATER ? C_ORANGE :
-                  e->type == ADV_TYPE_ROOM ? C_PURPLE : C_CYAN;
+                  e->type == ADV_TYPE_ROOM     ? C_PURPLE : C_CYAN;
     c.fillRect(2, y, 3, LH_ROW_H - 2, tc);
 
     char nm[19];
     ellipsize(nm, sizeof(nm), e->name);
-    c.setTextColor(C_FG);
+    c.setTextColor(selected ? C_FG : C_FG);
     c.setCursor(10, y + 3);
     c.print(nm);
 
@@ -73,24 +81,96 @@ void LastHeardScreen::draw() {
     c.setCursor(124, y + 3);
     c.print(line);
 
-    // snr quality dot
     float snr = e->snr4 / 4.0f;
     uint16_t qc = snr > 2 ? C_GREEN : snr > -8 ? C_YELLOW : C_RED;
     c.fillCircle(SCREEN_W - 10, y + LH_ROW_H / 2 - 1, 3, qc);
 
     c.setTextColor(C_FG_FAINT);
     c.setCursor(10, y + 12);
-    c.print(e->type == ADV_TYPE_REPEATER ? "repeater" : e->type == ADV_TYPE_ROOM ? "room" : "companion");
+    c.print(e->type == ADV_TYPE_REPEATER ? "repeater" :
+            e->type == ADV_TYPE_ROOM     ? "room" : "companion");
+  }
+
+  // hint
+  c.setTextColor(C_FG_FAINT);
+  c.setCursor(6, SCREEN_H - 10);
+  c.print("Enter/Select = save as contact");
+}
+
+void LastHeardScreen::addSelected() {
+  int n = ui.heardCount();
+  if (_sel < 0 || _sel >= n) return;
+
+  const HeardEntry* e = ui.heardAt(_sel);
+  if (!e) return;
+
+  if (!ui.mesh) return;
+
+  // Already in the mesh contacts table?
+  ContactInfo* live = ui.mesh->lookupContactByPubKey(e->prefix, 6);
+  if (live) {
+    ui.mesh->saveContacts();  // ensure disk matches RAM
+    ui.toast("Already in contacts", C_YELLOW);
+    return;
+  }
+
+  // Need a full ContactInfo from the recent-advert cache (auto-add may be off)
+  ContactInfo* recent = ui.findRecentContact(e->prefix);
+  if (!recent) {
+    ui.toast("Full advert not in memory - wait for another advert", C_YELLOW);
+    return;
+  }
+
+  if (ui.mesh->addContact(*recent)) {
+    ui.mesh->saveContacts();  // was RAM-only before - vanished on reboot
+    ui.toast("Contact saved", C_GREEN);
+  } else {
+    ui.toast("Contact list full", C_RED);
   }
 }
 
 bool LastHeardScreen::nav(NavEvent e) {
   int n = ui.heardCount();
+  if (n == 0) return false;
+
   switch (e) {
-    case NAV_UP:   if (_top > 0) _top--; return true;
-    case NAV_DOWN: if (_top < n - LH_VIS) _top++; return true;
-    default: return false;
+    case NAV_UP:
+      if (_sel > 0) _sel--;
+      return true;
+    case NAV_DOWN:
+      if (_sel < n - 1) _sel++;
+      return true;
+    case NAV_SELECT:
+      addSelected();
+      return true;
+    default:
+      return false;
   }
+}
+
+bool LastHeardScreen::key(uint8_t k) {
+  if (k == 0x0D) {          // Enter
+    addSelected();
+    return true;
+  }
+  return false;
+}
+
+bool LastHeardScreen::touch(const TouchEvent& e) {
+  if (e.kind != TouchEvent::TAP) return false;
+  if (e.y < LH_TOP) return false;
+
+  int row = (e.y - LH_TOP) / LH_ROW_H;
+  int idx = _top + row;
+  if (idx < 0 || idx >= ui.heardCount()) return false;
+
+  if (idx == _sel) {
+    // second tap on the already-selected row -> save
+    addSelected();
+  } else {
+    _sel = idx;
+  }
+  return true;
 }
 
 // ============================================================ Noise floor

@@ -481,11 +481,12 @@ void MyMesh::queueMessage(const ContactInfo &from, uint8_t txt_type, mesh::Packe
   }
 #endif
 
-  if (_ui) {   // MeshDeck hook
+  if (_ui) {
     if (txt_type == TXT_TYPE_CLI_DATA) {
       _ui->onCliResponse(from, text);
     } else {
-      _ui->onContactMsg(from, text, sender_timestamp, path_len, pkt->getSNR());
+      const uint8_t* sp = (txt_type == TXT_TYPE_SIGNED_PLAIN && extra_len >= 4) ? extra : nullptr;
+      _ui->onContactMsg(from, text, sender_timestamp, path_len, pkt->getSNR(), sp);
     }
   }
 }
@@ -498,6 +499,162 @@ bool MyMesh::filterRecvFloodPacket(mesh::Packet* packet) {
 
 bool MyMesh::allowPacketForward(const mesh::Packet* packet) {
   return _prefs.client_repeat != 0;
+}
+
+// MyMesh.cpp – add a flag so retx does not create a new ACK slot
+int MyMesh::loginWithPassword(const ContactInfo& recipient, const char* password,
+                              uint32_t& est_timeout) {
+  if (!password) password = "";
+  // Always flood login requests. sendLogin() uses a stored direct path when
+  // present, and a stale multi-hop path is a very common cause of silent
+  // timeouts — even to a node sitting next to you. Path-return on success
+  // re-learns a good direct path.
+  ContactInfo flood_target = recipient;
+  const int was_path = (int)recipient.out_path_len;
+  flood_target.out_path_len = OUT_PATH_UNKNOWN;
+  int result = sendLogin(flood_target, password, est_timeout);
+  if (result != MSG_SEND_FAILED) {
+    memcpy(&pending_login, recipient.id.pub_key, 4);
+    Serial.printf("[mesh] login TX -> %s (pending flood; was_path=%d type=%u pwd_len=%u)\n",
+                  recipient.name, was_path, (unsigned)recipient.type,
+                  (unsigned)strlen(password));
+  } else {
+    Serial.printf("[mesh] login TX FAILED -> %s\n", recipient.name);
+  }
+  return result;
+}
+
+void MyMesh::completePendingLogin(const ContactInfo& contact, bool ok) {
+  if (!pending_login) return;
+  if (memcmp(&pending_login, contact.id.pub_key, 4) != 0) return;
+  pending_login = 0;
+  if (ok) {
+    // Keep-alive so isLoggedInto() works for rooms that never send one
+    startConnection(contact, 300);
+  }
+  if (_ui) _ui->onLoginResult(contact, ok);
+  Serial.printf("[mesh] login %s from=%s (completePendingLogin)\n",
+                ok ? "OK" : "FAIL", contact.name);
+}
+
+void MyMesh::ensureServerSession(const ContactInfo& contact) {
+  if (!hasConnectionTo(contact.id.pub_key))
+    startConnection(contact, 300);
+}
+
+bool MyMesh::resetRoomSyncSince(ContactInfo& contact) {
+  if (contact.type != ADV_TYPE_ROOM) return false;
+  contact.sync_since = 0;
+  // Also update live table entry if this is a snapshot
+  if (ContactInfo* live = lookupContactByPubKey(contact.id.pub_key, 6)) {
+    live->sync_since = 0;
+  }
+  dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+  Serial.printf("[mesh] room sync_since reset for %s (full backlog on next login)\n",
+                contact.name);
+  return true;
+}
+
+uint8_t MyMesh::voiceHopCount(uint8_t out_path_len) {
+  if (out_path_len == OUT_PATH_UNKNOWN) return 0xFF;  // unknown
+  return (uint8_t)(out_path_len & 63);                 // hop count in low 6 bits
+}
+
+bool MyMesh::canVoiceCallContact(const ContactInfo& to) const {
+  const ContactInfo* live = &to;
+  ContactInfo* found = const_cast<MyMesh*>(this)->lookupContactByPubKey(to.id.pub_key, 6);
+  if (found) live = found;
+  uint8_t hops = voiceHopCount(live->out_path_len);
+  // Unknown path → we force zero-hop at send time (RF neighbors only) — OK.
+  if (hops == 0xFF) return true;
+  return hops <= VOICE_MAX_HOPS;
+}
+
+bool MyMesh::sendVoiceToContact(const ContactInfo& to,
+                                const uint8_t* data, size_t len, bool eos,
+                                bool is_retx, uint32_t* out_tag) {
+  if (!data || len < 2) return false;
+  // sendRequest() rejects data_len > MAX_PACKET_PAYLOAD-16 (168 on stock MeshCore).
+  // data_len here is 2 (type+ver) + len (flags+seq+codec).
+  const size_t req_len = 2 + len;
+  if (req_len > (size_t)(MAX_PACKET_PAYLOAD - 16)) {
+    Serial.printf("[voice] send rejected: req_len=%u max=%u (framed=%u)\n",
+                  (unsigned)req_len, (unsigned)(MAX_PACKET_PAYLOAD - 16),
+                  (unsigned)len);
+    return false;
+  }
+
+  // Prefer live contact entry (fresh path / secret). Snapshot copies go stale.
+  ContactInfo recipient = to;
+  if (ContactInfo* live = lookupContactByPubKey(to.id.pub_key, 6)) {
+    recipient = *live;
+  }
+
+  const bool is_ctrl = (data[0] & 0x80) != 0;
+  const uint8_t saved_path_len = recipient.out_path_len;
+  uint8_t hops = voiceHopCount(recipient.out_path_len);
+
+  // Voice must not flood the mesh (repeaters rebroadcast floods). Cap at 1 hop
+  // so a single personal repeater can extend range without multi-hop spam.
+  if (hops != 0xFF && hops > VOICE_MAX_HOPS) {
+    Serial.printf(
+        "[voice] send rejected: path %u hops > max %u (need closer peer)\n",
+        (unsigned)hops, (unsigned)VOICE_MAX_HOPS);
+    return false;
+  }
+  if (recipient.out_path_len == OUT_PATH_UNKNOWN) {
+    // No learned path: zero-hop DIRECT only (neighbors), never FLOOD.
+    recipient.out_path_len = 0;
+    hops = 0;
+    Serial.println("[voice] no path — forcing zero-hop direct (no flood)");
+  }
+
+  uint8_t buf[2 + 180];
+  buf[0] = REQ_TYPE_VOICE_CODEC2;
+  buf[1] = 2;
+  memcpy(buf + 2, data, len);
+
+  uint32_t tag = 0, est_timeout = 0;
+  int result = sendRequest(recipient, buf, (uint8_t)(2 + len), tag, est_timeout);
+
+  if (result == MSG_SEND_FAILED) {
+    Serial.printf("[voice] sendRequest FAILED  len=%u eos=%d retx=%d\n",
+                  (unsigned)len, (data[0] & 0x01) ? 1 : 0, is_retx ? 1 : 0);
+    return false;
+  }
+
+  if (out_tag) *out_tag = tag;
+
+  // Only the original *media* send registers for ACK tracking.
+  // Control frames (flags bit7) are short signaling — don't count as "lost voice".
+  // RETX: caller must update the existing slot's tag from out_tag.
+  if (!is_retx && !is_ctrl && _ui) {
+    _ui->onVoicePacketSent(tag, (uint16_t)len, (data[0] & 0x01) != 0);
+  }
+
+  Serial.printf(
+      "[voice] sendRequest OK tag=%u len=%u eos=%d seq=%u retx=%d ctrl=%d "
+      "route=%s hops=%u path_was=0x%02X\n",
+      tag, (unsigned)len, (data[0] & 0x01) ? 1 : 0, data[1],
+      is_retx ? 1 : 0, is_ctrl ? 1 : 0,
+      (result == MSG_SEND_SENT_FLOOD) ? "flood" : "direct",
+      (unsigned)hops, (unsigned)saved_path_len);
+  return true;
+}
+
+bool MyMesh::sendVoiceToChannel(const mesh::GroupChannel& ch,
+                                const uint8_t* data, size_t len, bool eos) {
+  if (!data || len == 0 || len + 2 > MAX_CHANNEL_DATA_LENGTH) return false;
+
+  uint8_t buf[2 + 256];
+  buf[0] = 1;                    // version
+  buf[1] = eos ? 0x01 : 0x00;    // bit0 = end-of-stream
+  memcpy(buf + 2, data, len);
+
+  mesh::GroupChannel channel = ch;
+  return sendGroupData(channel, nullptr, OUT_PATH_UNKNOWN,
+                       DATA_TYPE_VOICE_CODEC2_700,
+                       buf, (int)(2 + len));
 }
 
 void MyMesh::sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis) {
@@ -538,18 +695,33 @@ void MyMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pk
 
 void MyMesh::onMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
                            const char *text) {
+  // Room/repeater often pushes backlog right after login, sometimes before the
+  // formal login RESPONSE. Treat traffic from a pending login peer as success.
+  if (pending_login && memcmp(&pending_login, from.id.pub_key, 4) == 0 &&
+      (from.type == ADV_TYPE_ROOM || from.type == ADV_TYPE_REPEATER)) {
+    completePendingLogin(from, true);
+  }
   markConnectionActive(from); // in case this is from a server, and we have a connection
   queueMessage(from, TXT_TYPE_PLAIN, pkt, sender_timestamp, NULL, 0, text);
 }
 
 void MyMesh::onCommandDataRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
                                const char *text) {
+  if (pending_login && memcmp(&pending_login, from.id.pub_key, 4) == 0 &&
+      (from.type == ADV_TYPE_ROOM || from.type == ADV_TYPE_REPEATER)) {
+    completePendingLogin(from, true);
+  }
   markConnectionActive(from); // in case this is from a server, and we have a connection
   queueMessage(from, TXT_TYPE_CLI_DATA, pkt, sender_timestamp, NULL, 0, text);
 }
 
 void MyMesh::onSignedMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
                                  const uint8_t *sender_prefix, const char *text) {
+  // Signed backlog from room server = we are authenticated
+  if (pending_login && memcmp(&pending_login, from.id.pub_key, 4) == 0 &&
+      (from.type == ADV_TYPE_ROOM || from.type == ADV_TYPE_REPEATER)) {
+    completePendingLogin(from, true);
+  }
   markConnectionActive(from);
   // from.sync_since change needs to be persisted
   dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
@@ -614,6 +786,12 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
 
 void MyMesh::onChannelDataRecv(const mesh::GroupChannel &channel, mesh::Packet *pkt, uint16_t data_type,
                                const uint8_t *data, size_t data_len) {
+  if (data_type == DATA_TYPE_VOICE_CODEC2_700 && data_len > 2) {
+    bool eos = data[1] & 0x01;
+    const uint8_t* payload = data + 2;
+    size_t plen = data_len - 2;
+    if (_ui) _ui->onVoiceRecv(channel, payload, plen, eos, pkt ? pkt->getSNR() : 0.0f);
+  }
   if (data_len > MAX_CHANNEL_DATA_LENGTH) {
     MESH_DEBUG_PRINTLN("onChannelDataRecv: dropping payload_len=%d exceeds frame limit=%d",
                        (uint32_t)data_len, (uint32_t)MAX_CHANNEL_DATA_LENGTH);
@@ -647,8 +825,93 @@ void MyMesh::onChannelDataRecv(const mesh::GroupChannel &channel, mesh::Packet *
   }
 }
 
-uint8_t MyMesh::onContactRequest(const ContactInfo &contact, uint32_t sender_timestamp, const uint8_t *data,
-                                 uint8_t len, uint8_t *reply) {
+uint8_t MyMesh::onContactRequest(const ContactInfo& contact,
+                                 uint32_t sender_timestamp,
+                                 const uint8_t* data, uint8_t len,
+                                 uint8_t* reply) {
+  if (!data || len < 1) {
+    Serial.println("[mesh] contact REQ empty");
+    return 0;
+  }
+
+  Serial.printf("[mesh] contact REQ type=0x%02X len=%u from=%s\n",
+                data[0], (unsigned)len, contact.name);
+
+  // ── Voice (Codec2) ─────────────────────────────────────────
+  if (data[0] == REQ_TYPE_VOICE_CODEC2) {
+    // Supported formats:
+    //   v2: [type][ver=2][flags][seq][payload…]   (len >= 4)
+    //   v1: [type][flags][payload…]               (len >= 2)
+    // UI always receives: [flags][seq][payload…]
+
+    if (len < 2) {
+      Serial.println("[mesh] voice REQ too short");
+      return 0;
+    }
+
+    static uint8_t frame_buf[182];
+    const uint8_t* voice_ptr = nullptr;
+    uint8_t        voice_len = 0;
+    bool           eos       = false;
+    uint8_t        seq       = 0;
+    bool           is_v2     = false;
+
+    if (len >= 4 && data[1] == 2) {
+      // ---------- v2 ----------
+      is_v2 = true;
+      uint8_t flags = data[2];
+      seq           = data[3];
+      eos           = (flags & 0x01) != 0;
+
+      voice_len = (uint8_t)(len - 2);
+      if (voice_len > sizeof(frame_buf)) voice_len = sizeof(frame_buf);
+      memcpy(frame_buf, data + 2, voice_len);
+      voice_ptr = frame_buf;
+    } else {
+      // ---------- v1 (legacy) ----------
+      uint8_t flags = data[1];
+      eos           = (flags & 0x01) != 0;
+      seq           = 0;
+
+      uint8_t plen = (len > 2) ? (uint8_t)(len - 2) : 0;
+      if (plen > 180) plen = 180;
+
+      frame_buf[0] = flags;
+      frame_buf[1] = 0;               // synthetic seq
+      if (plen) memcpy(frame_buf + 2, data + 2, plen);
+      voice_ptr = frame_buf;
+      voice_len = (uint8_t)(2 + plen);
+    }
+
+    float snr = getLastSNR();
+
+    Serial.printf("[mesh] voice RX v%s seq=%u len=%u eos=%d flags=0x%02X snr=%.1f from=%s\n",
+                  is_v2 ? "2" : "1", seq, (unsigned)voice_len,
+                  eos ? 1 : 0, voice_ptr[0], snr, contact.name);
+
+    // Deliver to UI (control packets and media packets both go through here)
+    if (_ui && voice_ptr && voice_len >= 2) {
+      _ui->onVoiceRecvFromContact(contact, voice_ptr, voice_len, eos, snr);
+    }
+
+    // MeshCore response convention: first 4 bytes echo the request timestamp
+    // (tag) so the sender can match onContactResponse. Then voice ACK body:
+    //   [type][ver][ack_flags=0x02][seq][eos][0]
+    // bit 1 of ack_flags signals "successfully received"
+    if (reply) {
+      memcpy(reply, &sender_timestamp, 4);
+      reply[4] = REQ_TYPE_VOICE_CODEC2;
+      reply[5] = 2;
+      reply[6] = 0x02;               // ACK ok
+      reply[7] = seq;
+      reply[8] = eos ? 1 : 0;
+      reply[9] = 0;
+      return 10;
+    }
+    return 0;
+  }
+
+  // ── Telemetry (restored — companion / path discovery depends on this) ──
   if (data[0] == REQ_TYPE_GET_TELEMETRY_DATA) {
     uint8_t permissions = 0;
     uint8_t cp = contact.flags >> 1; // LSB used as 'favourite' bit (so only use upper bits)
@@ -671,100 +934,26 @@ uint8_t MyMesh::onContactRequest(const ContactInfo &contact, uint32_t sender_tim
       permissions |= cp & TELEM_PERM_ENVIRONMENT;
     }
 
-    uint8_t perm_mask = ~(data[1]);    // NEW: first reserved byte (of 4), is now inverse mask to apply to permissions
+    uint8_t perm_mask = (len > 1) ? (uint8_t)(~(data[1])) : 0xFF;
     permissions &= perm_mask;
 
-    if (permissions & TELEM_PERM_BASE) { // only respond if base permission bit is set
+    if (permissions & TELEM_PERM_BASE) {
       telemetry.reset();
       telemetry.addVoltage(TELEM_CHANNEL_SELF, (float)board.getBattMilliVolts() / 1000.0f);
-      // query other sensors -- target specific
       sensors.querySensors(permissions, telemetry);
 
-      memcpy(reply, &sender_timestamp,
-             4); // reflect sender_timestamp back in response packet (kind of like a 'tag')
-
+      memcpy(reply, &sender_timestamp, 4);
       uint8_t tlen = telemetry.getSize();
       memcpy(&reply[4], telemetry.getBuffer(), tlen);
       return 4 + tlen;
     }
+    return 0;
   }
-  return 0; // unknown
+
+  // ── Unhandled request types ────────────────────────────────
+  Serial.printf("[mesh] unhandled contact REQ type=0x%02X\n", data[0]);
+  return 0;
 }
-
-void MyMesh::onContactResponse(const ContactInfo &contact, const uint8_t *data, uint8_t len) {
-  uint32_t tag;
-  memcpy(&tag, data, 4);
-
-  if (pending_login && memcmp(&pending_login, contact.id.pub_key, 4) == 0) { // check for login response
-    // yes, is response to pending sendLogin()
-    pending_login = 0;
-
-    int i = 0;
-    if (memcmp(&data[4], "OK", 2) == 0) { // legacy Repeater login OK response
-      out_frame[i++] = PUSH_CODE_LOGIN_SUCCESS;
-      out_frame[i++] = 0; // legacy: is_admin = false
-      memcpy(&out_frame[i], contact.id.pub_key, 6);
-      i += 6;                                     // pub_key_prefix
-    } else if (data[4] == RESP_SERVER_LOGIN_OK) { // new login response
-      uint16_t keep_alive_secs = ((uint16_t)data[5]) * 16;
-      if (keep_alive_secs > 0) {
-        startConnection(contact, keep_alive_secs);
-      }
-      out_frame[i++] = PUSH_CODE_LOGIN_SUCCESS;
-      out_frame[i++] = data[6]; // permissions (eg. is_admin)
-      memcpy(&out_frame[i], contact.id.pub_key, 6);
-      i += 6; // pub_key_prefix
-      memcpy(&out_frame[i], &tag, 4);
-      i += 4; // NEW: include server timestamp
-      out_frame[i++] = data[7]; // NEW (v7): ACL permissions
-      out_frame[i++] = data[12]; // FIRMWARE_VER_LEVEL
-    } else {
-      out_frame[i++] = PUSH_CODE_LOGIN_FAIL;
-      out_frame[i++] = 0; // reserved
-      memcpy(&out_frame[i], contact.id.pub_key, 6);
-      i += 6; // pub_key_prefix
-    }
-    _serial->writeFrame(out_frame, i);
-  } else if (len > 4 && // check for status response
-             pending_status &&
-             memcmp(&pending_status, contact.id.pub_key, 4) == 0 // legacy matching scheme
-                                                                 // FUTURE: tag == pending_status
-  ) {
-    pending_status = 0;
-
-    int i = 0;
-    out_frame[i++] = PUSH_CODE_STATUS_RESPONSE;
-    out_frame[i++] = 0; // reserved
-    memcpy(&out_frame[i], contact.id.pub_key, 6);
-    i += 6; // pub_key_prefix
-    memcpy(&out_frame[i], &data[4], len - 4);
-    i += (len - 4);
-    _serial->writeFrame(out_frame, i);
-  } else if (len > 4 && tag == pending_telemetry) {  // check for matching response tag
-    pending_telemetry = 0;
-
-    int i = 0;
-    out_frame[i++] = PUSH_CODE_TELEMETRY_RESPONSE;
-    out_frame[i++] = 0; // reserved
-    memcpy(&out_frame[i], contact.id.pub_key, 6);
-    i += 6; // pub_key_prefix
-    memcpy(&out_frame[i], &data[4], len - 4);
-    i += (len - 4);
-    _serial->writeFrame(out_frame, i);
-  } else if (len > 4 && tag == pending_req) {  // check for matching response tag
-    pending_req = 0;
-
-    int i = 0;
-    out_frame[i++] = PUSH_CODE_BINARY_RESPONSE;
-    out_frame[i++] = 0; // reserved
-    memcpy(&out_frame[i], &tag, 4);   // app needs to match this to RESP_CODE_SENT.tag
-    i += 4;
-    memcpy(&out_frame[i], &data[4], len - 4);
-    i += (len - 4);
-    _serial->writeFrame(out_frame, i);
-  }
-}
-
 bool MyMesh::onContactPathRecv(ContactInfo& contact, uint8_t* in_path, uint8_t in_path_len, uint8_t* out_path, uint8_t out_path_len, uint8_t extra_type, uint8_t* extra, uint8_t extra_len) {
   if (extra_type == PAYLOAD_TYPE_RESPONSE && extra_len > 4) {
     uint32_t tag;
@@ -794,6 +983,128 @@ bool MyMesh::onContactPathRecv(ContactInfo& contact, uint8_t* in_path, uint8_t i
   }
   // let base class handle received path and data
   return BaseChatMesh::onContactPathRecv(contact, in_path, in_path_len, out_path, out_path_len, extra_type, extra, extra_len);
+}
+void MyMesh::onContactResponse(const ContactInfo &contact, const uint8_t *data, uint8_t len) {
+  if (!data || len < 4) {
+    Serial.println("[mesh] contact RESP too short");
+    return;
+  }
+
+  uint32_t tag;
+  memcpy(&tag, data, 4);
+
+  // ── Voice ACK ──────────────────────────────────────────────
+  // Preferred (MeshCore-style): [tag:4][type][ver][ack_flags][seq][eos][0]
+  // Legacy (no tag prefix):     [type][ver][ack_flags][seq][eos][0]
+  if (len >= 10 && data[4] == REQ_TYPE_VOICE_CODEC2 && data[5] == 2) {
+    bool ok  = (data[6] & 0x02) != 0;
+    bool eos = (data[8] & 0x01) != 0;
+    if (ok && _ui) {
+      _ui->onVoicePacketAcked(tag, eos);
+      Serial.printf("[mesh] voice ACK tag=%u eos=%d from=%s\n",
+                    tag, eos ? 1 : 0, contact.name);
+    } else {
+      Serial.printf("[mesh] voice ACK ignored (ok=%d) tag=%u\n", ok ? 1 : 0, tag);
+    }
+  } else if (len >= 6 && data[0] == REQ_TYPE_VOICE_CODEC2 && data[1] == 2) {
+    bool ok  = (data[2] & 0x02) != 0;
+    bool eos = (data[4] & 0x01) != 0;
+    if (ok && _ui) {
+      _ui->onVoicePacketAcked(0, eos);
+      Serial.printf("[mesh] voice ACK (legacy) eos=%d from=%s\n",
+                    eos ? 1 : 0, contact.name);
+    }
+  }
+
+  // ── Login response ─────────────────────────────────────────
+  // Match companion_radio / meshdeck-os: any RESPONSE from the pending peer
+  // completes the login attempt (OK / LOGIN_OK / else FAIL). Always notify UI.
+  // Room backlog still also completes via completePendingLogin() on messages.
+  if (pending_login && memcmp(&pending_login, contact.id.pub_key, 4) == 0 &&
+      len >= 5) {
+    constexpr uint16_t kDefaultKeepAliveSecs = 300;
+    bool ok = false;
+    int i = 0;
+
+    if (len >= 6 && memcmp(&data[4], "OK", 2) == 0) {
+      // Legacy repeater login OK text
+      ok = true;
+      startConnection(contact, kDefaultKeepAliveSecs);
+      out_frame[i++] = PUSH_CODE_LOGIN_SUCCESS;
+      out_frame[i++] = 0;
+      memcpy(&out_frame[i], contact.id.pub_key, 6);
+      i += 6;
+    } else if (data[4] == RESP_SERVER_LOGIN_OK) {
+      // Modern login OK (repeaters often send keep-alive field as 0)
+      ok = true;
+      uint16_t keep_alive_secs = (len > 5) ? ((uint16_t)data[5]) * 16 : 0;
+      if (keep_alive_secs == 0) keep_alive_secs = kDefaultKeepAliveSecs;
+      startConnection(contact, keep_alive_secs);
+      out_frame[i++] = PUSH_CODE_LOGIN_SUCCESS;
+      out_frame[i++] = (len > 6) ? data[6] : 0;
+      memcpy(&out_frame[i], contact.id.pub_key, 6);
+      i += 6;
+      memcpy(&out_frame[i], &tag, 4);
+      i += 4;
+      out_frame[i++] = (len > 7) ? data[7] : 0;
+      out_frame[i++] = (len > 12) ? data[12] : 0;
+    } else {
+      // Companion treats any other payload as login FAIL
+      ok = false;
+      out_frame[i++] = PUSH_CODE_LOGIN_FAIL;
+      out_frame[i++] = 0;
+      memcpy(&out_frame[i], contact.id.pub_key, 6);
+      i += 6;
+      Serial.printf("[mesh] login FAIL payload from=%s len=%u b4=0x%02X\n",
+                    contact.name, (unsigned)len, data[4]);
+    }
+
+    pending_login = 0;
+    if (_serial) _serial->writeFrame(out_frame, i);
+    if (_ui) _ui->onLoginResult(contact, ok);
+    Serial.printf("[mesh] login %s from=%s (response)\n",
+                  ok ? "OK" : "FAIL", contact.name);
+  }
+
+  // ── Status response ────────────────────────────────────────
+  else if (len > 4 && pending_status &&
+           memcmp(&pending_status, contact.id.pub_key, 4) == 0) {
+    pending_status = 0;
+    int i = 0;
+    out_frame[i++] = PUSH_CODE_STATUS_RESPONSE;
+    out_frame[i++] = 0;
+    memcpy(&out_frame[i], contact.id.pub_key, 6);
+    i += 6;
+    memcpy(&out_frame[i], &data[4], len - 4);
+    i += (len - 4);
+    _serial->writeFrame(out_frame, i);
+  }
+
+  // ── Telemetry response ─────────────────────────────────────
+  else if (len > 4 && tag == pending_telemetry) {
+    pending_telemetry = 0;
+    int i = 0;
+    out_frame[i++] = PUSH_CODE_TELEMETRY_RESPONSE;
+    out_frame[i++] = 0;
+    memcpy(&out_frame[i], contact.id.pub_key, 6);
+    i += 6;
+    memcpy(&out_frame[i], &data[4], len - 4);
+    i += (len - 4);
+    _serial->writeFrame(out_frame, i);
+  }
+
+  // ── Binary / generic request response ──────────────────────
+  else if (len > 4 && tag == pending_req) {
+    pending_req = 0;
+    int i = 0;
+    out_frame[i++] = PUSH_CODE_BINARY_RESPONSE;
+    out_frame[i++] = 0;
+    memcpy(&out_frame[i], &tag, 4);
+    i += 4;
+    memcpy(&out_frame[i], &data[4], len - 4);
+    i += (len - 4);
+    _serial->writeFrame(out_frame, i);
+  }
 }
 
 void MyMesh::onControlDataRecv(mesh::Packet *packet) {

@@ -70,7 +70,7 @@ void TerminalScreen::execCommand(const char* line_in) {
   if (strcmp(line, "help") == 0) {
     ui.termLog(C_TERM_SYS, "advert | advertf | contacts | heard | noise | mem");
     ui.termLog(C_TERM_SYS, "send <name> <msg>   ch <idx> <msg>");
-    ui.termLog(C_TERM_SYS, "login <name> <pwd>  cmd <name> <cli...>  trace <name>");
+    ui.termLog(C_TERM_SYS, "login <name> <pwd>  resync <name>  cmd <name> <cli...>");
     ui.termLog(C_TERM_SYS, "freq <MHz> | sf <7-12> | bw <kHz> | cr <5-8> | power <dBm>");
     ui.termLog(C_TERM_SYS, "name <newname> | time <epoch> | clear | reboot");
   } else if (strcmp(line, "advert") == 0) {
@@ -121,11 +121,17 @@ void TerminalScreen::execCommand(const char* line_in) {
       *pwd++ = 0;
       ContactInfo* ct = findByName(args);
       if (ct) {
-        uint32_t est;
-        int res = m->sendLogin(*ct, pwd, est);
-        ui.termLog(res == MSG_SEND_FAILED ? C_TERM_ERR : C_TERM_TX, "login -> %s", ct->name);
+        // Track pending so onLoginResult can save password / toast
+        bool ok = ui.beginRoomLogin(*ct, pwd, true);
+        ui.termLog(ok ? C_TERM_TX : C_TERM_ERR, "login -> %s", ct->name);
       } else ui.termLog(C_TERM_ERR, "no contact matching '%s'", args);
     }
+  } else if (strcmp(line, "resync") == 0 && args) {
+    ContactInfo* ct = findByName(args);
+    if (ct) {
+      bool ok = ui.resyncRoom(*ct, true);
+      ui.termLog(ok ? C_TERM_TX : C_TERM_ERR, "resync full backlog -> %s", ct->name);
+    } else ui.termLog(C_TERM_ERR, "no contact matching '%s'", args);
   } else if (strcmp(line, "cmd") == 0 && args) {
     char* cli = strchr(args, ' ');
     if (cli) {

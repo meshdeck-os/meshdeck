@@ -33,6 +33,21 @@ private:
   void sendCanned(int i);
   void switchTab(int dir);
   DeckThread* cur();
+  void drawAddShareDialog();
+  bool tryOfferContactShare(const char* text);
+  bool tryOfferChannelShare(const char* text);
+  bool confirmAddShare();
+
+  // Long-press actions menu + contact share picker
+  void openActions();
+  void closeOverlays();
+  void drawActionsMenu();
+  void runAction(int which);
+  void openContactPicker();
+  void rebuildContactPicker();
+  void drawContactPicker();
+  bool shareContactAt(int picker_i);
+  bool shareCurrentChannel();
 
   int _tab = 0;              // index into sorted order
   int _order[MD_MAX_THREADS];
@@ -40,11 +55,31 @@ private:
   int _scroll = 0;           // px from bottom
   char _compose[MD_TEXT_LEN];
   int _clen = 0;
-  // bubble hitboxes for tap-to-reply / QR
-  struct Hit { int16_t y0, y1; int msg_idx; } _hits[24];
+  // bubble hitboxes for tap-to-reply / QR / contact|channel share
+  struct Hit { int16_t y0, y1; int msg_idx; uint8_t has_share; } _hits[24];
   int _nhits = 0;
   int _canned = -1;          // -1 = off, else index into the quick-message list
+
+  // Pending "add shared contact/channel?" dialog
+  enum ShareDlg : uint8_t { SHARE_NONE = 0, SHARE_CONTACT, SHARE_CHANNEL };
+  ShareDlg _add_dlg = SHARE_NONE;
+  uint8_t _add_pub[32] = {0};     // contact pubkey, or channel secret
+  uint8_t _add_type = 1;          // contact type
+  int     _add_seclen = 0;        // channel secret length (16 or 32)
+  char    _add_name[32] = {0};
+
+  // Long-press UI
+  enum Overlay : uint8_t { OV_NONE = 0, OV_ACTIONS, OV_PICK_CONTACT };
+  Overlay _overlay = OV_NONE;
+  int _act_sel = 0;               // actions menu selection
+  int _nactions = 0;              // active action count (channel-dependent)
+  static const int CMAP_MAX = 48;
+  int _cmap[CMAP_MAX];            // contact indices for picker
+  int _cn = 0;
+  int _csel = 0, _ctop = 0;
 };
+
+// ---------------------------------------------------------------- Contacts
 
 // ---------------------------------------------------------------- Contacts
 
@@ -58,12 +93,22 @@ public:
   bool touch(const TouchEvent& e) override;
 private:
   void action(int which);
+  void rebuildFilter();
+  int  filteredCount() const { return _fn; }
+  int  realIndex(int filtered_i) const;   // filtered row -> contact idx
+
   int _sel = 0;
   int _top = 0;
-  int _menu = -1;            // -1 none, else selected action row
-};
+  int _menu = -1;
 
-// ---------------------------------------------------------------- Map
+  char _filter[20] = {0};   // MUST be zeroed - garbage here looks like a filter
+  int  _flen = 0;
+  // Index map: filtered row -> real contact index (size for MAX_CONTACTS)
+  static constexpr int FMAP_MAX = 350;
+  int  _fmap[FMAP_MAX];
+  int  _fn = 0;
+};
+// ---------------------------------------------------------------- Map (classic)
 
 class MapScreen : public Screen {
 public:
@@ -81,18 +126,75 @@ private:
   bool _centered_once = false;
 };
 
+// ---------------------------------------------------------------- NewMaps (OSM multi-layer vector)
+
+struct NewMapPack;  // from NewMap.h
+
+class NewMapsScreen : public Screen {
+public:
+  NewMapsScreen(UITask& u) : Screen(u) {}
+  void enter() override;
+  void leave() override;
+  void draw() override;
+  bool key(uint8_t c) override;
+  bool nav(NavEvent e) override;
+  bool touch(const TouchEvent& e) override;
+  void project(double lat, double lon, int& x, int& y) const;
+private:
+  void drawFeatList(const NewMapPack* pk, const NewMapPt* pts, uint32_t n_pts,
+                    const NewMapFeat* feats, uint32_t n_feats, uint8_t phase);
+  void drawAllLists(const NewMapPack* pk, uint8_t phase);
+  void drawPack(const NewMapPack* pk);
+  void drawPackLabels(const NewMapPack* pk);
+  void drawNodes();
+  void drawChrome(bool have);
+  void identifyAt(int x, int y);
+  void drawInfoCard();
+  void screenToLatLon(int x, int y, double& lat, double& lon) const;
+  void captureSnap();
+  bool blitPanPreview();
+  double _clat = 47.68, _clon = -116.78;  // N. Idaho default
+  float  _scale = 256.0f;
+  bool   _centered_once = false;
+  bool   _tiles_pending = false;
+  int    _pack_i = -1;
+  bool   _panning = false;
+  uint16_t* _snap = nullptr;
+  bool   _snap_ok = false;
+  double _snap_clat = 0, _snap_clon = 0;
+  float  _snap_scale = 0;
+  uint32_t _last_tap_ms = 0;
+  int16_t _last_tap_x = 0, _last_tap_y = 0;
+  bool   _pinching = false;
+  int    _pinch_anchor = 0;
+  bool   _info_on = false;
+  char   _info_title[24] = {0};
+  char   _info_sub[24] = {0};
+  char   _info_kind[28] = {0};
+  char   _info_place[24] = {0};
+  char   _info_coord[32] = {0};
+  uint32_t _info_opened = 0;
+  bool zoomBy(int dir);
+};
+
+// ---------------------------------------------------------------- Last heard
+
 // ---------------------------------------------------------------- Last heard
 
 class LastHeardScreen : public Screen {
 public:
   LastHeardScreen(UITask& u) : Screen(u) {}
+  void enter() override { _top = 0; _sel = 0; }
   void draw() override;
   bool nav(NavEvent e) override;
+  bool key(uint8_t k) override;
+  bool touch(const TouchEvent& e) override;
 private:
+  void addSelected();
   int _top = 0;
+  int _sel = 0;
 };
-
-// ---------------------------------------------------------------- Repeaters
+// ---------------------------------------------------------------- Repeaters / rooms
 
 class RepeatersScreen : public Screen {
 public:
@@ -101,11 +203,24 @@ public:
   void draw() override;
   bool key(uint8_t c) override;
   bool nav(NavEvent e) override;
+  // Local UI lines (">") always go to the open console.
   void onCliResponse(const char* from, const char* text);
+  // Remote traffic: only shown if console is open for this peer (prefix match).
+  void onPeerLine(const uint8_t* prefix6, const char* from, const char* text);
+  void onLoginFinished(const char* name, bool ok);
 private:
+  enum Mode : uint8_t { MODE_LIST = 0, MODE_LOGIN, MODE_CONSOLE };
   void rebuild();
   void sendLine();
+  void openLogin();
+  void submitLogin();
+  void openConsole();
+  void toggleAuto();
+  void resyncSelected(bool full_history);
   ContactInfo* selContact();
+  void replaceWaitingLine(const char* from, const char* text);
+  bool consoleIsFor(const uint8_t* prefix6) const;
+  void ensureConsoleFor(const uint8_t* prefix6);
 
   uint8_t _prefixes[24][6];
   char _names[24][28];
@@ -113,13 +228,17 @@ private:
   uint32_t _last_adv[24];
   int _n = 0;
   int _sel = 0, _top = 0;
-  bool _console = false;      // list vs console mode
+  Mode _mode = MODE_LIST;
   char _line[80];
   int _llen = 0;
-  bool _pwd_mode = false;
+  bool _login_auto = true;   // remember + auto-login after success
+  bool _show_pwd = false;     // reveal password while typing
+  bool _awaiting_login = false;
   struct CLine { char from[12]; char text[70]; };
   CLine _clines[14];
   int _cn = 0;
+  uint8_t _console_prefix[6] = {0};  // which peer the console buffer belongs to
+  bool _console_bound = false;
 };
 
 // ---------------------------------------------------------------- Trace
@@ -179,10 +298,21 @@ private:
   void adjust(int dir);
   void select();
   void applyEdit();
-  int _sel = 0, _top = 0;
+  void rebuildFilter();
+  int  realItem() const;     // filtered row -> SI_* index
+  int  filteredCount() const { return _fn; }
+
+  int _sel = 0, _top = 0;    // selection is in filtered list space
   bool _editing = false;
-  char _edit[68];          // large enough for a WiFi WPA password
+  char _edit[68];            // large enough for a WiFi WPA password
   int _elen = 0;
+
+  // Type-to-filter (same idea as Contacts)
+  char _filter[20] = {0};
+  int  _flen = 0;
+  static constexpr int FMAP_MAX = 48;  // SI_COUNT fits with headroom
+  int  _fmap[FMAP_MAX];
+  int  _fn = 0;
 };
 
 // ---------------------------------------------------------------- QR viewer
@@ -304,34 +434,86 @@ public:
   bool nav(NavEvent e) override;
   bool touch(const TouchEvent& e) override;
 private:
-  void select();
+  enum Mode : uint8_t {
+    LIST = 0,
+    MENU,
+    ADD_NAME,
+    ADD_KEY,
+    RENAME,
+    REKEY,
+    SHOW_KEY,
+    CONFIRM_DEL,
+  };
+  void refreshCount();
+  int  meshIndex() const;          // selected list row -> mesh slot
+  void openMenu();
+  void runAction(int which);
+  void beginAdd();
   void applyEdit();
-  int  _n = 0;               // channel count (refreshed on enter/draw)
-  int  _sel = 0, _top = 0;
-  bool _adding = false;
-  int  _phase = 0;           // 0 = enter name, 1 = enter key
+  void drawEditor(const char* title, const char* hint);
+  void drawShowKey();
+  void drawConfirmDel();
+
+  int  _n = 0;               // occupied channel count
+  int  _sel = 0, _top = 0;   // list selection (includes "+ Add" row at _n)
+  int  _menu = 0;            // action index when Mode::MENU
+  Mode _mode = LIST;
+  int  _edit_slot = -1;      // mesh index for rename/rekey/show/delete
   char _newname[32];
   char _edit[68];
   int  _elen = 0;
+  char _show_key[48];        // base64 for SHOW_KEY
+  char _show_name[32];
 };
 
-// ---------------------------------------------------------------- Voice test (beta)
+// ---------------------------------------------------------------- Voice call (beta, Contacts -> Call...)
 
 class VoiceScreen : public Screen {
 public:
   VoiceScreen(UITask& u) : Screen(u) {}
+
+  // Screen lifecycle
   void enter() override;
+  void leave() override;
   void draw() override;
   bool key(uint8_t c) override;
   bool nav(NavEvent e) override;
+  void tick1s() override;
+
+  // Call entry / global ring UI (Contacts + UITask)
+  void prepareOutbound(const ContactInfo& to);
+  bool beginOutboundInvite();
+  void acceptInbound();
+  void rejectInbound(bool send_dm);
+  bool hasIncomingCall() const;
+  bool isInCall() const;          // OUTGOING / INCOMING / CONNECTED
+  void drawIncomingOverlay(GFXcanvas16& c);
+
+  // Mesh / media hooks (UITask -> VoiceScreen)
+  void pushRxVoice(const uint8_t* data, size_t len, bool eos,
+                   const char* from_name, float snr,
+                   const ContactInfo* from = nullptr);
+  void onPacketSent(uint32_t tag, uint16_t len, bool eos);
+  void onPacketAcked(uint32_t tag, bool eos);
+  void checkVoiceAcks();
+#ifdef MESHDECK_BETA
+  void pollPTT();          // TX: drain encode worker -> mesh
+  void pollRxPlayback();   // ensure c2dec alive while listening (decode not on loop)
+  void onTargetAdvert(const ContactInfo& contact);
+
+  // Call control plane (INVITE / ACCEPT / DECLINE / END / BUSY)
+  bool sendVoiceControl(UITask& ui, const ContactInfo& to, uint8_t ctrl);
+  void endCall(UITask& ui, bool send_end);
+  void handleCallControl(UITask& ui, uint8_t ctrl, const char* from_name, float snr,
+                         const ContactInfo* from = nullptr);
+#endif
+
 private:
-  void record();
-  void playback();
-  int16_t* _buf = nullptr;     // PSRAM capture buffer (16 kHz mono, 16-bit)
-  int      _cap = 0;           // capacity in samples
-  int      _len = 0;           // samples captured
-  int      _peak = 0;          // last-capture peak amplitude
-  int      _rms = 0;           // last-capture RMS
-  bool     _hwok = false;      // ES7210 chip-id read back OK
-  char     _status[40] = "hold ENTER to record 2s";
+  bool startCodec2Init(const char* status_while);
+  void onConnectedMedia();
+
+  bool _hwok = false;
+  bool _auto_invite = false;
+  char _status[48] = "Call from Contacts";
 };
+
