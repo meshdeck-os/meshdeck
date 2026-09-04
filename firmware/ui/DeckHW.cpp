@@ -1,5 +1,7 @@
 #include "DeckHW.h"
 #include "Theme.h"
+#include <math.h>
+#include <string.h>
 #include <esp_heap_caps.h>
 #include <driver/i2s.h>
 #include <SD.h>
@@ -237,16 +239,31 @@ NavEvent DeckHW::readNav() {
 
 // ---------------- GT911 touch ----------------
 
-bool DeckHW::gt911Read(uint8_t* buf) {
-  // status register 0x814E, point data 0x814F..
-  Wire.beginTransmission(_touch_addr);
-  Wire.write(0x81); Wire.write(0x4E);
+static bool gt911RegRead(uint8_t addr, uint16_t reg, uint8_t* dst, uint8_t n) {
+  Wire.beginTransmission(addr);
+  Wire.write((uint8_t)(reg >> 8));
+  Wire.write((uint8_t)(reg & 0xFF));
   if (Wire.endTransmission(false) != 0) return false;
-  Wire.requestFrom(_touch_addr, (uint8_t)9);
-  if (Wire.available() < 9) return false;
-  for (int i = 0; i < 9; i++) buf[i] = Wire.read();
-  if (buf[0] & 0x80) {
-    // clear status
+  if (Wire.requestFrom(addr, n) != n) return false;
+  for (uint8_t i = 0; i < n; i++) dst[i] = Wire.read();
+  return true;
+}
+
+bool DeckHW::gt911Read(uint8_t* buf, uint8_t nbytes) {
+  // 0x814E status, then 8-byte points at 0x814F, 0x8157, ...
+  // Read status + each point as separate transactions -- one 17-byte
+  // request often comes back short on this bus and killed 2-finger pinch.
+  memset(buf, 0, nbytes);
+  uint8_t st = 0;
+  if (!gt911RegRead(_touch_addr, 0x814E, &st, 1)) return false;
+  buf[0] = st;
+  uint8_t n = st & 0x0F;
+  if (n > 2) n = 2;
+  for (uint8_t i = 0; i < n && (1 + (i + 1) * 8) <= nbytes; i++) {
+    if (!gt911RegRead(_touch_addr, (uint16_t)(0x814F + i * 8), buf + 1 + i * 8, 8))
+      break;
+  }
+  if (st & 0x80) {
     Wire.beginTransmission(_touch_addr);
     Wire.write(0x81); Wire.write(0x4E); Wire.write(0x00);
     Wire.endTransmission();
@@ -255,31 +272,76 @@ bool DeckHW::gt911Read(uint8_t* buf) {
   return false;
 }
 
+void DeckHW::mapRawTouch(int16_t rx, int16_t ry, int16_t& sx, int16_t& sy) const {
+  switch (_touch_map) {
+    default:
+    case 0: sx = rx;       sy = ry;       break;
+    case 1: sx = 320 - rx; sy = 240 - ry; break;
+    case 2: sx = ry;       sy = 240 - rx; break;
+    case 3: sx = 320 - ry; sy = rx;       break;
+  }
+  if (_flip) { sx = 320 - sx; sy = 240 - sy; }
+  if (sx < 0) sx = 0; if (sx >= SCREEN_W) sx = SCREEN_W - 1;
+  if (sy < 0) sy = 0; if (sy >= SCREEN_H) sy = SCREEN_H - 1;
+}
+
 bool DeckHW::readTouch(TouchEvent& ev) {
   ev.kind = TouchEvent::NONE;
   if (_touch_addr == 0) return false;
 
-  uint8_t buf[9];
-  bool fresh = gt911Read(buf);
+  uint8_t buf[17];
+  bool fresh = gt911Read(buf, 17);
   uint8_t n = fresh ? (buf[0] & 0x0F) : 0;
+  if (n > 2) n = 2;
+
+  if (n >= 2) {
+    int16_t ax, ay, bx, by;
+    mapRawTouch(buf[2] | (buf[3] << 8), buf[4] | (buf[5] << 8), ax, ay);
+    mapRawTouch(buf[10] | (buf[11] << 8), buf[12] | (buf[13] << 8), bx, by);
+    int ddx = (int)bx - ax, ddy = (int)by - ay;
+    int dist = (int)sqrtf((float)(ddx * ddx + ddy * ddy));
+    if (dist < 1) dist = 1;
+    _last_activity = millis();
+    _touching = true;
+    _t_moved = true;
+    _t_long_fired = true;
+    if (!_pinch) {
+      _pinch = true;
+      _pinch_dist = (int16_t)dist;
+      return false;
+    }
+    ev.kind = TouchEvent::PINCH;
+    ev.x = (int16_t)((ax + bx) / 2);
+    ev.y = (int16_t)((ay + by) / 2);
+    ev.dx = (int16_t)(dist - _pinch_dist);
+    ev.dy = (int16_t)dist;
+    _pinch_dist = (int16_t)dist;
+    _tx = ev.x; _ty = ev.y;
+    return ev.dx != 0;
+  }
+
+  if (_pinch) {
+    _pinch = false;
+    if (n == 0 && fresh) {
+      _touching = false;
+      ev.kind = TouchEvent::RELEASE;
+      ev.x = _tx; ev.y = _ty;
+      ev.dx = 0; ev.dy = 0;
+      return true;
+    }
+    if (n == 1) {
+      int16_t sx, sy;
+      mapRawTouch(buf[2] | (buf[3] << 8), buf[4] | (buf[5] << 8), sx, sy);
+      _t_start_x = _tx = sx; _t_start_y = _ty = sy;
+      _t_start_ms = millis();
+      _t_moved = true;
+      return false;
+    }
+  }
 
   if (n > 0) {
-    int16_t rx = buf[2] | (buf[3] << 8);
-    int16_t ry = buf[4] | (buf[5] << 8);
-    // Touch controller configs vary between T-Deck batches; four mappings,
-    // selectable in Settings -> Touch mapping:
-    //   0 = landscape direct, 1 = landscape 180, 2 = portrait swap A, 3 = portrait swap B
     int16_t sx, sy;
-    switch (_touch_map) {
-      default:
-      case 0: sx = rx;       sy = ry;       break;
-      case 1: sx = 320 - rx; sy = 240 - ry; break;
-      case 2: sx = ry;       sy = 240 - rx; break;
-      case 3: sx = 320 - ry; sy = rx;       break;
-    }
-    if (_flip) { sx = 320 - sx; sy = 240 - sy; }
-    if (sx < 0) sx = 0; if (sx >= SCREEN_W) sx = SCREEN_W - 1;
-    if (sy < 0) sy = 0; if (sy >= SCREEN_H) sy = SCREEN_H - 1;
+    mapRawTouch(buf[2] | (buf[3] << 8), buf[4] | (buf[5] << 8), sx, sy);
 
     _last_activity = millis();
     if (!_touching) {
@@ -287,25 +349,39 @@ bool DeckHW::readTouch(TouchEvent& ev) {
       _t_start_x = _tx = sx; _t_start_y = _ty = sy;
       _t_start_ms = millis();
       _t_moved = false;
-      // Raw + mapped coords for touch calibration (visible in the USB serial log).
-      // raw = straight off the GT911; map<n>-> = after the selected transform.
-      Serial.printf("touch raw=%d,%d  map%d-> %d,%d\n", rx, ry, _touch_map, sx, sy);
+      _t_long_fired = false;
+      Serial.printf("touch raw=%d,%d  map%d-> %d,%d\n",
+                    buf[2] | (buf[3] << 8), buf[4] | (buf[5] << 8),
+                    _touch_map, sx, sy);
       return false;
     }
-    int16_t dx = sx - _tx, dy = sy - _ty;
-    if (abs(sx - _t_start_x) > 8 || abs(sy - _t_start_y) > 8) _t_moved = true;
+    int16_t ddx = sx - _tx, ddy = sy - _ty;
+    // 18px slop so a slightly messy tap is still a TAP (needed for double-tap)
+    if (abs(sx - _t_start_x) > 18 || abs(sy - _t_start_y) > 18) _t_moved = true;
     _tx = sx; _ty = sy;
-    if (_t_moved && (dx || dy)) {
+    if (_t_moved && (ddx || ddy)) {
       ev.kind = TouchEvent::DRAG;
-      ev.x = sx; ev.y = sy; ev.dx = dx; ev.dy = dy;
+      ev.x = sx; ev.y = sy; ev.dx = ddx; ev.dy = ddy;
+      return true;
+    }
+    if (!_t_long_fired && !_t_moved && (millis() - _t_start_ms) >= 550) {
+      _t_long_fired = true;
+      ev.kind = TouchEvent::LONG;
+      ev.x = _tx; ev.y = _ty; ev.dx = 0; ev.dy = 0;
       return true;
     }
     return false;
   }
 
-  if (_touching && fresh) {   // finger lifted
+  if (_touching && fresh) {
     _touching = false;
-    if (!_t_moved && millis() - _t_start_ms < 600) {
+    bool was_pinch = _pinch;
+    _pinch = false;
+    int travel = abs(_tx - _t_start_x);
+    int travely = abs(_ty - _t_start_y);
+    if (travely > travel) travel = travely;
+    if (!was_pinch && !_t_long_fired && travel < 22 &&
+        millis() - _t_start_ms < 500) {
       ev.kind = TouchEvent::TAP;
       ev.x = _tx; ev.y = _ty; ev.dx = 0; ev.dy = 0;
     } else {
@@ -313,6 +389,7 @@ bool DeckHW::readTouch(TouchEvent& ev) {
       ev.x = _tx; ev.y = _ty;
       ev.dx = _tx - _t_start_x; ev.dy = _ty - _t_start_y;
     }
+    _t_long_fired = false;
     return true;
   }
   return false;
@@ -360,10 +437,21 @@ void DeckHW::i2sTone(uint16_t freq, uint16_t ms) {
   i2s_driver_uninstall(I2S_NUM_0);
 }
 
+// All UI tones go through i2sTone(), which no-ops when Sound is off or volume is 0.
 void DeckHW::beep(uint16_t f, uint16_t ms) { i2sTone(f, ms); }
-void DeckHW::chimeMessage() { i2sTone(1319, 60); i2sTone(1760, 90); }
-void DeckHW::chimeBoot()    { i2sTone(880, 70); i2sTone(1109, 70); i2sTone(1319, 110); }
-void DeckHW::chimeError()   { i2sTone(220, 120); }
+void DeckHW::chimeMessage() {
+  if (!_snd_on || _snd_vol == 0) return;
+  i2sTone(1319, 60);
+  i2sTone(1760, 90);
+}
+void DeckHW::chimeBoot() {
+  // Kept for API compatibility; boot is intentionally silent.
+  (void)0;
+}
+void DeckHW::chimeError() {
+  if (!_snd_on || _snd_vol == 0) return;
+  i2sTone(220, 120);
+}
 
 // ---------------- SD card ----------------
 // The bus already has MISO attached (see begin()), so no pin re-routing is

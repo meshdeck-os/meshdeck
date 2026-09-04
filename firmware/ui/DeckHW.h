@@ -38,9 +38,9 @@ enum NavEvent : uint8_t {
 };
 
 struct TouchEvent {
-  enum Kind : uint8_t { NONE = 0, TAP, DRAG, RELEASE } kind;
-  int16_t x, y;      // current position (screen coords)
-  int16_t dx, dy;    // delta since last event (DRAG)
+  enum Kind : uint8_t { NONE = 0, TAP, DRAG, RELEASE, LONG, PINCH } kind;
+  int16_t x, y;      // current position / pinch centroid
+  int16_t dx, dy;    // DRAG: pixel delta. PINCH: dx=dist delta, dy=current dist
 };
 
 class DeckHW {
@@ -70,11 +70,15 @@ public:
   void kickActivity() { _last_activity = millis(); }
 
   // -- sound --
+  // When off (or volume 0), beep/chimeMessage/chimeError are silent.
+  // applySettings() wires Settings -> Sound / Volume into setSound().
   void setSound(bool on, uint8_t volume_0_10) { _snd_on = on; _snd_vol = volume_0_10; }
-  void beep(uint16_t freq, uint16_t ms);    // blocking, short
-  void chimeMessage();
-  void chimeBoot();
-  void chimeError();
+  bool soundOn() const { return _snd_on; }
+  uint8_t volume() const { return _snd_vol; }
+  void beep(uint16_t freq, uint16_t ms);    // blocking, short; honors Sound setting
+  void chimeMessage();                      // incoming message; honors Sound
+  void chimeBoot();                         // no-op (boot stays quiet)
+  void chimeError();                        // honors Sound
 
   // -- SD card (shared SPI bus; call sdBegin, use SD, then sdEnd) --
   bool sdBegin();
@@ -86,7 +90,8 @@ public:
 
 private:
   void tbISRUpdate();
-  bool gt911Read(uint8_t* buf);
+  bool gt911Read(uint8_t* buf, uint8_t nbytes);
+  void mapRawTouch(int16_t rx, int16_t ry, int16_t& sx, int16_t& sy) const;
   void i2sTone(uint16_t freq, uint16_t ms);
 
   SPIClass* _spi = nullptr;                 // HSPI shared bus (display + SD)
@@ -131,7 +136,10 @@ private:
 
   // touch state
   bool _touching = false;
+  bool _t_long_fired = false;   // LONG already emitted for this press
   int16_t _tx = 0, _ty = 0, _t_start_x = 0, _t_start_y = 0;
   uint32_t _t_start_ms = 0;
   bool _t_moved = false;
+  bool _pinch = false;
+  int16_t _pinch_dist = 0;
 };

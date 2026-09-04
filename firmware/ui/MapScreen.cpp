@@ -5,8 +5,8 @@
 #include <math.h>
 
 // px per degree of longitude at each zoom step
-static const float ZOOMS[] = { 1.7f, 4, 8, 16, 32, 64, 128, 256, 512 };
-#define N_ZOOMS 9
+static const float ZOOMS[] = { 1.7f, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096 };
+#define N_ZOOMS 12
 
 void MapScreen::enter() {
   if (!_centered_once) {
