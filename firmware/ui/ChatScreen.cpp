@@ -898,7 +898,8 @@ void ChatScreen::draw() {
           cur_len++;
         }
       }
-      int want_w = longest * 6 + 18;
+      const int cs = (ui.set.reserved[1] & 2) ? 2 : 1;   // Large chat text (#15)
+      int want_w = longest * 6 * cs + 18;
 
       // Name row needs: pad + name + gap + sig + pad
       if (show_name) {
@@ -911,7 +912,7 @@ void ChatScreen::draw() {
       if (bub_w > BUB_MAX_W) bub_w = BUB_MAX_W;
 
       const int text_max_w = bub_w - 14;
-      const int text_h = measureRichTextHeight(c, text_max_w, m->text, 1);
+      const int text_h = measureRichTextHeight(c, text_max_w, m->text, cs);
       const bool has_share = messageHasShare(m->text);
       // top pad 4 + text + bottom pad 4; name row + optional "tap to add" chip
       int bub_h = text_h + 8 + (show_name ? 10 : 0) + (has_share ? 12 : 0);
@@ -953,7 +954,7 @@ void ChatScreen::draw() {
       // Contact shares: draw body in accent so it looks tappable
       const int used_h = drawRichText(c, bx + 7, ty, text_max_w, m->text,
                                       has_share ? C_CYAN :
-                                      (out ? C_BUB_OUT_TXT : C_FG), 1);
+                                      (out ? C_BUB_OUT_TXT : C_FG), cs);
       (void)used_h;
       if (has_share && bub_h >= 28) {
         c.setTextColor(C_ACCENT);
