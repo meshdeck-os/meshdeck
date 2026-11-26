@@ -1,4 +1,5 @@
 #include "MyMesh.h"
+#include "Battery.h"
 
 #include <Arduino.h> // needed for PlatformIO
 #include <Mesh.h>
@@ -939,7 +940,7 @@ uint8_t MyMesh::onContactRequest(const ContactInfo& contact,
 
     if (permissions & TELEM_PERM_BASE) {
       telemetry.reset();
-      telemetry.addVoltage(TELEM_CHANNEL_SELF, (float)board.getBattMilliVolts() / 1000.0f);
+      telemetry.addVoltage(TELEM_CHANNEL_SELF, (float)Battery::milliVolts() / 1000.0f);
       sensors.querySensors(permissions, telemetry);
 
       memcpy(reply, &sender_timestamp, 4);
@@ -1849,7 +1850,7 @@ void MyMesh::handleCmdFrame(size_t len) {
     uint8_t reply[11];
     int i = 0;
     reply[i++] = RESP_CODE_BATT_AND_STORAGE;
-    uint16_t battery_millivolts = board.getBattMilliVolts();
+    uint16_t battery_millivolts = Battery::milliVolts();
     uint32_t used = _store->getStorageUsedKb();
     uint32_t total = _store->getStorageTotalKb();
     memcpy(&reply[i], &battery_millivolts, 2); i += 2;
@@ -2025,7 +2026,7 @@ void MyMesh::handleCmdFrame(size_t len) {
     }
   } else if (cmd_frame[0] == CMD_SEND_TELEMETRY_REQ && len == 4) {  // 'self' telemetry request
     telemetry.reset();
-    telemetry.addVoltage(TELEM_CHANNEL_SELF, (float)board.getBattMilliVolts() / 1000.0f);
+    telemetry.addVoltage(TELEM_CHANNEL_SELF, (float)Battery::milliVolts() / 1000.0f);
     // query other sensors -- target specific
     sensors.querySensors(0xFF, telemetry);
 
@@ -2238,7 +2239,7 @@ void MyMesh::handleCmdFrame(size_t len) {
       int i = 0;
       out_frame[i++] = RESP_CODE_STATS;
       out_frame[i++] = STATS_TYPE_CORE;
-      uint16_t battery_mv = board.getBattMilliVolts();
+      uint16_t battery_mv = Battery::milliVolts();
       uint32_t uptime_secs = _ms->getMillis() / 1000;
       uint8_t queue_len = (uint8_t)_mgr->getOutboundTotal();
       memcpy(&out_frame[i], &battery_mv, 2); i += 2;
