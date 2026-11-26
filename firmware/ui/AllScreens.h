@@ -65,6 +65,9 @@ private:
   int _scroll = 0;           // px from bottom
   char _compose[MD_TEXT_LEN];
   int _clen = 0;
+  // backspace acceleration (#16): sustained fast deletes remove whole words
+  uint32_t _bs_last = 0;
+  int _bs_run = 0;
   // bubble hitboxes for tap-to-reply / QR / contact|channel share
   struct Hit { int16_t y0, y1; int msg_idx; uint8_t has_share; } _hits[24];
   int _nhits = 0;
@@ -83,6 +86,13 @@ private:
   Overlay _overlay = OV_NONE;
   int _act_sel = 0;               // actions menu selection
   int _nactions = 0;              // active action count (channel-dependent)
+  // actions menu as an ID list (order can shift with context, so dispatch by ID)
+  enum ChatAct : uint8_t { CA_NEW_MSG, CA_SHARE_CONTACT, CA_QUICK, CA_SHARE_CHANNEL, CA_JUMP, CA_CLEAR };
+  uint8_t _act_ids[6];
+  int buildActionList(const char* labels[6]);
+  bool _pick_new_msg = false;     // contact picker mode: true = open DM, false = share
+  bool openDMAt(int picker_i);    // open/create a DM thread for the picked contact (#6)
+  void pickerChoose(int picker_i);
   static const int CMAP_MAX = 48;
   int _cmap[CMAP_MAX];            // contact indices for picker
   int _cn = 0;

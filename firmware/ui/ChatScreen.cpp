@@ -336,48 +336,62 @@ void ChatScreen::openActions() {
   _add_dlg = SHARE_NONE;
   _overlay = OV_ACTIONS;
   _act_sel = 0;
-  // Base actions + optional Share channel
-  DeckThread* t = cur();
-  _nactions = 3;  // Share contact, Quick messages, Jump to latest
-  if (t && t->kind == TK_CHANNEL) _nactions = 4;
-  if (_clen > 0) _nactions++;   // + Clear typed text (always last)
+  const char* labels[6];
+  _nactions = buildActionList(labels);
 }
 
-// Action indices depend on whether Share channel is present:
-//   always: 0 Share contact, 1 Quick messages, last Jump to latest
-//   channel: 2 Share this channel, 3 Jump
-//   non-channel: 2 Jump
-void ChatScreen::runAction(int which) {
+// Build the actions list for the current context. Both the renderer and the
+// dispatcher use this so the on-screen order and the action IDs never drift
+// apart. "New message" is first because starting a DM is the primary action -
+// it's the fix for "Chat doesn't take you to user messages" (#6).
+int ChatScreen::buildActionList(const char* labels[6]) {
+  int n = 0;
   DeckThread* t = cur();
-  const bool ch = t && t->kind == TK_CHANNEL;
-  if (_clen > 0 && which == _nactions - 1) {   // Clear typed text (last item)
-    clearCompose();
-    _overlay = OV_NONE;
-    return;
+  labels[n] = "New message...";    _act_ids[n++] = CA_NEW_MSG;
+  labels[n] = "Share contact...";  _act_ids[n++] = CA_SHARE_CONTACT;
+  labels[n] = "Quick messages";    _act_ids[n++] = CA_QUICK;
+  if (t && t->kind == TK_CHANNEL) { labels[n] = "Share this channel"; _act_ids[n++] = CA_SHARE_CHANNEL; }
+  labels[n] = "Jump to latest";    _act_ids[n++] = CA_JUMP;
+  if (_clen > 0) { labels[n] = "Clear typed text"; _act_ids[n++] = CA_CLEAR; }
+  return n;
+}
+
+void ChatScreen::runAction(int which) {
+  if (which < 0 || which >= _nactions) { _overlay = OV_NONE; return; }
+  switch (_act_ids[which]) {
+    case CA_NEW_MSG:       _pick_new_msg = true;  openContactPicker(); return;
+    case CA_SHARE_CONTACT: _pick_new_msg = false; openContactPicker(); return;
+    case CA_QUICK:         _overlay = OV_NONE; _canned = 0; return;
+    case CA_SHARE_CHANNEL: shareCurrentChannel(); _overlay = OV_NONE; return;
+    case CA_JUMP:          _scroll = 0; _overlay = OV_NONE; return;
+    case CA_CLEAR:         clearCompose(); _overlay = OV_NONE; return;
+    default:               _overlay = OV_NONE; return;
   }
-  if (which == 0) {
-    openContactPicker();
-    return;
-  }
-  if (which == 1) {
-    _overlay = OV_NONE;
-    _canned = 0;
-    return;
-  }
-  if (ch && which == 2) {
-    shareCurrentChannel();
-    _overlay = OV_NONE;
-    return;
-  }
-  // Jump to latest
-  _scroll = 0;
+}
+
+// Open (or create) the DM thread for the contact the picker is on, and jump
+// into it. This is what makes "New message..." work from inside Chat (#6).
+bool ChatScreen::openDMAt(int picker_i) {
+  if (picker_i < 0 || picker_i >= _cn || !ui.mesh) return false;
+  static ContactInfo ct;
+  if (!ui.mesh->getContactByIdx(_cmap[picker_i], ct)) return false;
+  DeckThread* t = ui.store.forContact(ct.id.pub_key, ct.name);
+  if (!t) { ui.toast("Could not open DM", C_RED); return false; }
   _overlay = OV_NONE;
+  ui.openThread(ui.store.indexOf(t));
+  return true;
+}
+
+// Picker selection dispatch: open a DM in new-message mode, else share-contact.
+void ChatScreen::pickerChoose(int picker_i) {
+  if (_pick_new_msg) { openDMAt(picker_i); }
+  else if (shareContactAt(picker_i)) { _overlay = OV_NONE; }
 }
 
 void ChatScreen::openContactPicker() {
   rebuildContactPicker();
   if (_cn == 0) {
-    ui.toast("No contacts to share", C_YELLOW);
+    ui.toast("No contacts yet", C_YELLOW);
     _overlay = OV_NONE;
     return;
   }
@@ -496,14 +510,8 @@ void ChatScreen::drawActionsMenu() {
   c.fillScreen(C_BG);
   ui.drawStatusBar("Chat actions");
 
-  const char* labels[5];
-  int n = 0;
-  labels[n++] = "Share contact...";
-  labels[n++] = "Quick messages";
-  DeckThread* t = cur();
-  if (t && t->kind == TK_CHANNEL) labels[n++] = "Share this channel";
-  labels[n++] = "Jump to latest";
-  if (_clen > 0) labels[n++] = "Clear typed text";   // must stay last (runAction)
+  const char* labels[6];
+  int n = buildActionList(labels);
   _nactions = n;
 
   const int rh = ACT_RH, mw = ACT_MW, mh = n * rh + 20;
@@ -530,7 +538,7 @@ void ChatScreen::drawContactPicker() {
   GFXcanvas16& c = ui.cv();
   // Full opaque list screen - chat must not show through
   c.fillScreen(C_BG);
-  ui.drawStatusBar("Share contact");
+  ui.drawStatusBar(_pick_new_msg ? "New message - pick contact" : "Share contact");
 
   c.setTextSize(1);
   c.setTextColor(C_FG_FAINT);
@@ -1161,7 +1169,7 @@ bool ChatScreen::key(uint8_t k) {
   }
   if (_overlay == OV_PICK_CONTACT) {
     if (k == 0x0D) {
-      if (shareContactAt(_csel)) _overlay = OV_NONE;
+      pickerChoose(_csel);
       return true;
     }
     if (k == 0x1B || k == 0x08 || k == 0x7F) {
@@ -1191,8 +1199,24 @@ bool ChatScreen::key(uint8_t k) {
     return true;
   }
   if (k == 0x08 || k == 0x7F) {   // backspace OR delete (T-Deck sends 0x7F)
-    if (_clen > 0) { _clen--; _compose[_clen] = 0; return true; }
-    return false;   // empty compose -> back
+    if (_clen == 0) return false; // empty compose -> back
+    // Auto-repeat / chunk delete (#16). The keyboard chip reports each key once
+    // and can't signal "held", so instead sustained *fast* backspaces (held key
+    // if the chip repeats, or just rapid taps) accelerate: the first few delete
+    // single chars, then it switches to deleting a whole word per press. A
+    // normal, paced backspace always deletes one char.
+    uint32_t now = millis();
+    if (now - _bs_last < 220) { if (_bs_run < 999) _bs_run++; }
+    else _bs_run = 0;
+    _bs_last = now;
+    if (_bs_run >= 3) {
+      while (_clen > 0 && _compose[_clen - 1] == ' ') _clen--;   // trailing spaces
+      while (_clen > 0 && _compose[_clen - 1] != ' ') _clen--;   // the word
+    } else {
+      _clen--;
+    }
+    _compose[_clen] = 0;
+    return true;
   }
   if (k == 0x09) { switchTab(1); return true; }   // tab key
   // '/' opens chat actions (keyboard without long-press)
@@ -1222,7 +1246,7 @@ bool ChatScreen::nav(NavEvent e) {
     if (e == NAV_UP) { if (_csel > 0) _csel--; return true; }
     if (e == NAV_DOWN) { if (_csel < _cn - 1) _csel++; return true; }
     if (e == NAV_SELECT) {
-      if (shareContactAt(_csel)) _overlay = OV_NONE;
+      pickerChoose(_csel);
       return true;
     }
     if (e == NAV_BACK) { openActions(); return true; }
@@ -1309,7 +1333,7 @@ bool ChatScreen::touch(const TouchEvent& e) {
       int r = _ctop + (e.y - top) / rh;
       if (r >= _ctop && r < _ctop + vis && r < _cn) {
         _csel = r;
-        if (shareContactAt(_csel)) _overlay = OV_NONE;
+        pickerChoose(_csel);
       }
       return true;
     }
