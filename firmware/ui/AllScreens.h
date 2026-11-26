@@ -10,12 +10,21 @@
 class HomeScreen : public Screen {
 public:
   HomeScreen(UITask& u) : Screen(u) {}
+  void enter() override;
   void draw() override;
   bool key(uint8_t c) override;
   bool nav(NavEvent e) override;
   bool touch(const TouchEvent& e) override;
 private:
+  int  visible(uint8_t* out);   // fill out[] with visible app indices, return count (#10)
+  void loadMenu();
+  void saveMenu();
   int _sel = 0;
+  uint8_t _order[24];           // display order = permutation of app indices
+  bool _hidden[24];             // per-app hidden flag (indexed by app index)
+  bool _menuLoaded = false;
+  bool _edit = false;           // menu-edit mode
+  int _grab = -1;               // slot being dragged in edit mode, -1 = none
 };
 
 // ---------------------------------------------------------------- Chat
