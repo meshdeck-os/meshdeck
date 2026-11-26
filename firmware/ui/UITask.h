@@ -279,7 +279,8 @@ public:
   void repLogFrom(const ContactInfo& from, const char* text);
 
   // status helpers
-  int batteryPercent() const;
+  int batteryPercent() const;          // 0..100, -1 unknown (held while charging)
+  bool batteryCharging() const;        // USB power detected
   int meshBars() const;                // 0..4 based on recent heard + snr
   bool ownPos(double& lat, double& lon) const;
   uint32_t epochNow() const;

@@ -73,7 +73,13 @@ void HomeScreen::draw() {
   // battery + mesh in corners
   char b[16];
   int pct = ui.batteryPercent();
-  if (pct >= 0) {
+  if (ui.batteryCharging()) {
+    // level isn't measurable through the charger - say so instead of "100%"
+    snprintf(b, sizeof(b), "CHG");
+    c.setTextColor(C_YELLOW);
+    c.setCursor(SCREEN_W - 8 - strlen(b) * 6, 8);
+    c.print(b);
+  } else if (pct >= 0) {
     snprintf(b, sizeof(b), "%d%%", pct);
     c.setTextColor(pct > 20 ? C_FG_DIM : C_RED);
     c.setCursor(SCREEN_W - 8 - strlen(b) * 6, 8);

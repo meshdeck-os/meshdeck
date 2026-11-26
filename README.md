@@ -121,6 +121,7 @@ path are in **FLASHING.md**.
 | Trackball click | select / send |
 | Trackball long-press | back |
 | Keyboard | type; enter = send/confirm; backspace/delete edits text; backspace on empty = back |
+| Shift + `$` (in chat) | clear the whole typed line (also: long-press -> Clear typed text) |
 | Touch | tap = select, drag = scroll/pan, swipe right = back |
 | Home screen keys 1-9 | quick-launch apps |
 

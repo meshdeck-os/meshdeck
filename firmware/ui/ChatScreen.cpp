@@ -340,6 +340,7 @@ void ChatScreen::openActions() {
   DeckThread* t = cur();
   _nactions = 3;  // Share contact, Quick messages, Jump to latest
   if (t && t->kind == TK_CHANNEL) _nactions = 4;
+  if (_clen > 0) _nactions++;   // + Clear typed text (always last)
 }
 
 // Action indices depend on whether Share channel is present:
@@ -349,6 +350,11 @@ void ChatScreen::openActions() {
 void ChatScreen::runAction(int which) {
   DeckThread* t = cur();
   const bool ch = t && t->kind == TK_CHANNEL;
+  if (_clen > 0 && which == _nactions - 1) {   // Clear typed text (last item)
+    clearCompose();
+    _overlay = OV_NONE;
+    return;
+  }
   if (which == 0) {
     openContactPicker();
     return;
@@ -490,13 +496,14 @@ void ChatScreen::drawActionsMenu() {
   c.fillScreen(C_BG);
   ui.drawStatusBar("Chat actions");
 
-  const char* labels[4];
+  const char* labels[5];
   int n = 0;
   labels[n++] = "Share contact...";
   labels[n++] = "Quick messages";
   DeckThread* t = cur();
   if (t && t->kind == TK_CHANNEL) labels[n++] = "Share this channel";
   labels[n++] = "Jump to latest";
+  if (_clen > 0) labels[n++] = "Clear typed text";   // must stay last (runAction)
   _nactions = n;
 
   const int rh = ACT_RH, mw = ACT_MW, mh = n * rh + 20;
@@ -1126,6 +1133,12 @@ void ChatScreen::sendCanned(int i) {
   sendCompose();
 }
 
+void ChatScreen::clearCompose() {
+  _clen = 0;
+  _compose[0] = 0;
+  ui.toast("text cleared", C_FG_DIM);
+}
+
 bool ChatScreen::key(uint8_t k) {
   // Add contact/channel confirm dialog
   if (_add_dlg != SHARE_NONE) {
@@ -1166,6 +1179,14 @@ bool ChatScreen::key(uint8_t k) {
   if (k == 0x0D) {
     if (_clen == 0) { _canned = 0; return true; }   // empty + enter -> quick messages
     sendCompose();
+    return true;
+  }
+  // Shift + $ clears the whole typed line. Alt/Shift + Backspace can't be
+  // used: the T-Deck keyboard chip sends a plain 0x08 for backspace no matter
+  // which modifier is held. Shift + $ reaches us as 0x04 because the chip
+  // "upper-cases" printable keys by subtracting 32 ('$' 0x24 -> 0x04).
+  if (k == 0x04) {
+    if (_clen > 0) clearCompose();
     return true;
   }
   if (k == 0x08 || k == 0x7F) {   // backspace OR delete (T-Deck sends 0x7F)

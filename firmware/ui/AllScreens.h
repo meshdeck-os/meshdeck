@@ -43,6 +43,7 @@ private:
   void closeOverlays();
   void drawActionsMenu();
   void runAction(int which);
+  void clearCompose();          // wipe the typed line (Shift+$ or actions menu)
   void openContactPicker();
   void rebuildContactPicker();
   void drawContactPicker();

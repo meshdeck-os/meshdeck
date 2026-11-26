@@ -1,4 +1,5 @@
 #include "UITask.h"
+#include "../Battery.h"
 #include "../MyMesh.h"
 #include "AllScreens.h"
 #include <helpers/TxtDataHelpers.h>
@@ -1564,14 +1565,10 @@ void UITask::repLogFrom(const ContactInfo& from, const char* text) {
 
 // ---------------------------------------------------------------- status helpers
 
-int UITask::batteryPercent() const {
-  int mv = getBattMilliVolts();
-  if (mv <= 0) return -1;
-  int pct = (mv - 3350) * 100 / (4200 - 3350);
-  if (pct < 0) pct = 0;
-  if (pct > 100) pct = 100;
-  return pct;
-}
+// Calibrated + smoothed + LiPo-curve battery state; see Battery.h for why this
+// no longer uses the board's raw getBattMilliVolts().
+int UITask::batteryPercent() const { return Battery::percent(); }
+bool UITask::batteryCharging() const { return Battery::charging(); }
 
 int UITask::meshBars() const {
   uint32_t now = epochNow();
@@ -1698,7 +1695,15 @@ void UITask::drawStatusBar(const char* title) {
   x -= 24;
   c.drawRect(x, 5, 18, 9, C_FG_DIM);
   c.fillRect(x + 18, 7, 2, 5, C_FG_DIM);
-  if (pct >= 0) {
+  if (batteryCharging()) {
+    // on USB power: the real level can't be measured, so show a bolt instead
+    // of a (false) full bar
+    c.drawLine(x + 11, 4, x + 7, 9, C_YELLOW);
+    c.drawLine(x + 12, 4, x + 8, 9, C_YELLOW);
+    c.drawFastHLine(x + 7, 9, 5, C_YELLOW);
+    c.drawLine(x + 11, 9, x + 7, 14, C_YELLOW);
+    c.drawLine(x + 10, 9, x + 6, 14, C_YELLOW);
+  } else if (pct >= 0) {
     uint16_t bc = pct > 30 ? C_GREEN : pct > 15 ? C_YELLOW : C_RED;
     c.fillRect(x + 2, 7, (14 * pct) / 100, 5, bc);
   }
@@ -1750,7 +1755,20 @@ void UITask::drawStatusBar(const char* title) {
 // ---------------------------------------------------------------- main loop
 
 void UITask::loop() {
+  Battery::update();                       // ~1 sample/s, also feeds MyMesh reports
   if (!_booted) return;
+
+  // repaint when the battery indicator changes (plug/unplug, level step)
+  {
+    static int last_pct = -2;
+    static bool last_chg = false;
+    int p = Battery::percent();
+    bool ch = Battery::charging();
+    if (p != last_pct || ch != last_chg) {
+      last_pct = p; last_chg = ch;
+      if (hw.isDisplayOn()) _dirty = true;
+    }
+  }
 
   store.loop();
   if (_web) _web->handleClient();          // remote screen web server
@@ -2975,6 +2993,15 @@ void DiagScreen::draw() {
 
     c.setTextColor(C_FG_DIM); c.setCursor(12, y2); c.print("CPU clock");
     snprintf(sv, sizeof(sv), "%u MHz", (unsigned)getCpuFrequencyMhz());
+    c.setTextColor(C_FG); c.setCursor(170, y2); c.print(sv); y2 += 14;
+
+    // battery sense voltage (smoothed / instantaneous) so the calibration can be
+    // checked against a multimeter on the cell
+    c.setTextColor(C_FG_DIM); c.setCursor(12, y2); c.print("Battery");
+    if (Battery::charging())
+      snprintf(sv, sizeof(sv), "%u/%u mV  USB", (unsigned)Battery::milliVolts(), (unsigned)Battery::rawMilliVolts());
+    else
+      snprintf(sv, sizeof(sv), "%u/%u mV  %d%%", (unsigned)Battery::milliVolts(), (unsigned)Battery::rawMilliVolts(), Battery::percent());
     c.setTextColor(C_FG); c.setCursor(170, y2); c.print(sv); y2 += 18;
 
     c.setTextColor(C_ACCENT); c.setCursor(8, y2); c.print("Free RAM (KB)"); y2 += 14;
