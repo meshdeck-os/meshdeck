@@ -29,6 +29,13 @@ void MapScreen::enter() {
     }
     _centered_once = true;
   }
+  ui.noteMapScreen(SCR_MAP);
+  _ov.close();                             // never come back to a stale menu
+  switch (ui.takeMapRequest()) {           // from the GPS Info screen
+    case UITask::MAPREQ_CENTER: { double lat, lon; if (ui.ownPos(lat, lon)) { _clat = lat; _clon = lon; } break; }
+    case UITask::MAPREQ_PICK:   _ov.openPick(); break;
+    default: break;
+  }
 }
 
 void MapScreen::project(double lat, double lon, int& x, int& y) const {
@@ -43,6 +50,7 @@ static bool onscreenish(int x, int y) {
 
 void MapScreen::draw() {
   GFXcanvas16& c = ui.cv();
+  if (_ov.mode() == MapOverlay::MENU) { _ov.drawMenu(ui); return; }
   c.fillScreen(C_MAP_BG);
 
   double ys = _scale / cos(_clat * 0.0174533);
@@ -195,7 +203,8 @@ void MapScreen::draw() {
   ui.drawStatusBar("Map");
   c.setTextColor(C_FG_FAINT);
   c.setCursor(6, SCREEN_H - 26);
-  c.print("+/- zoom  c centre  ball pan");
+  c.print("+/- zoom  c centre  m menu");
+  _ov.drawOver(ui, _clat, _clon);
 }
 
 void MapScreen::drawNodes() {
@@ -247,6 +256,7 @@ void MapScreen::drawNodes() {
 }
 
 bool MapScreen::key(uint8_t k) {
+  if (_ov.key(ui, k, _clat, _clon)) return true;
   int zi = 0;
   for (int i = 0; i < N_ZOOMS; i++) if (fabsf(_scale - ZOOMS[i]) < 0.01f) { zi = i; break; }
   if (k == '+' || k == '=' || k == 'q') { if (zi < N_ZOOMS - 1) _scale = ZOOMS[zi + 1]; return true; }
@@ -262,6 +272,7 @@ bool MapScreen::key(uint8_t k) {
 }
 
 bool MapScreen::nav(NavEvent e) {
+  if (_ov.nav(ui, e, _clat, _clon)) return true;
   double ys = _scale / cos(_clat * 0.0174533);
   double dlon = 30.0 / _scale, dlat = 30.0 / ys;
   switch (e) {
@@ -280,6 +291,7 @@ bool MapScreen::nav(NavEvent e) {
 }
 
 bool MapScreen::touch(const TouchEvent& e) {
+  if (_ov.touch(ui, e, _clat, _clon)) return true;
   if (e.kind == TouchEvent::DRAG) {
     double ys = _scale / cos(_clat * 0.0174533);
     _clon -= e.dx / _scale;

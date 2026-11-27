@@ -3,6 +3,7 @@
  * All MeshDeck screen classes.
  */
 #include "UITask.h"
+#include "MapOverlay.h"
 #include <helpers/ContactInfo.h>
 
 // ---------------------------------------------------------------- Home
@@ -144,6 +145,7 @@ private:
   double _clat = 54.5, _clon = -3.0;   // UK default centre
   float _scale = 12.0f;                // px per degree lon
   bool _centered_once = false;
+  MapOverlay _ov;                      // map menu + "set my position" pick mode
 };
 
 // ---------------------------------------------------------------- NewMaps (OSM multi-layer vector)
@@ -194,6 +196,7 @@ private:
   char   _info_place[24] = {0};
   char   _info_coord[32] = {0};
   uint32_t _info_opened = 0;
+  MapOverlay _ov;                      // map menu + "set my position" pick mode
   bool zoomBy(int dir);
 };
 
@@ -380,6 +383,21 @@ private:
 };
 
 // ---------------------------------------------------------------- SOS beacon
+
+class GpsInfoScreen : public Screen {
+public:
+  GpsInfoScreen(UITask& u) : Screen(u) {}
+  void enter() override { _sel = 0; }
+  void draw() override;
+  bool key(uint8_t c) override;
+  bool nav(NavEvent e) override;
+  bool touch(const TouchEvent& e) override;
+  void tick1s() override { ui.requestDraw(); }   // live satellite count / fix age
+private:
+  int  nActions() const;
+  void runAction(int i);
+  int  _sel = 0;
+};
 
 class SOSScreen : public Screen {
 public:

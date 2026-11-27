@@ -210,6 +210,17 @@ void NewMapsScreen::enter() {
     }
     _centered_once = true;
   }
+  ui.noteMapScreen(SCR_NEWMAPS);
+  _ov.close();                             // never come back to a stale menu
+  switch (ui.takeMapRequest()) {           // from the GPS Info screen
+    case UITask::MAPREQ_CENTER: {
+      double lat, lon;
+      if (ui.ownPos(lat, lon)) { _clat = lat; _clon = lon; _panning = false; }
+      break;
+    }
+    case UITask::MAPREQ_PICK: _ov.openPick(); _info_on = false; break;
+    default: break;
+  }
 }
 
 void NewMapsScreen::project(double lat, double lon, int& x, int& y) const {
@@ -704,7 +715,7 @@ void NewMapsScreen::drawChrome(bool have) {
 
   c.setTextColor(C_FG_FAINT);
   c.setCursor(90, SCREEN_H - 12);
-  c.print("long-tap info  +/-");
+  c.print("long-tap info  m menu");
 
   c.setTextColor(C_FG_FAINT);
   c.setCursor(SCREEN_W - 92, STATUS_H + 2);
@@ -713,12 +724,14 @@ void NewMapsScreen::drawChrome(bool have) {
 
 void NewMapsScreen::draw() {
   GFXcanvas16& c = ui.cv();
+  if (_ov.mode() == MapOverlay::MENU) { _ov.drawMenu(ui); return; }
 
   // During a finger-drag, slide the last full frame. A full vector rebuild
   // (and SD tile I/O) on every touch sample is what made swipe feel stuck.
   if (_panning && blitPanPreview()) {
     const NewMapPack* pk = ui.newmaps.pack(_pack_i);
     drawChrome(pk && pk->loaded);
+    _ov.drawOver(ui, _clat, _clon);
     return;
   }
 
@@ -781,6 +794,7 @@ void NewMapsScreen::draw() {
   drawNodes();
   drawChrome(have);
   captureSnap();
+  _ov.drawOver(ui, _clat, _clon);
   if (_info_on) drawInfoCard();
 }
 
@@ -1016,6 +1030,7 @@ bool NewMapsScreen::key(uint8_t k) {
     _info_on = false;
     return true;
   }
+  if (_ov.key(ui, k, _clat, _clon)) { _panning = false; return true; }
   // T-Deck prints + on O and - on I. Also accept q/a and symbol-layer + -.
   if (k == '+' || k == '=' || k == 'q' || k == 'Q' || k == ']' ||
       k == 'o' || k == 'O')
@@ -1042,6 +1057,7 @@ bool NewMapsScreen::nav(NavEvent e) {
   if (_info_on) {
     if (e == NAV_BACK || e == NAV_SELECT) { _info_on = false; return true; }
   }
+  if (_ov.nav(ui, e, _clat, _clon)) { _panning = false; return true; }
   double ys = _scale / cos(_clat * 0.017453292519943295);
   double dlon = 28.0 / _scale, dlat = 28.0 / ys;
   switch (e) {
@@ -1074,6 +1090,7 @@ bool NewMapsScreen::touch(const TouchEvent& e) {
       return true;
     }
   }
+  if (_ov.touch(ui, e, _clat, _clon)) { _panning = false; _pinching = false; return true; }
   if (e.kind == TouchEvent::LONG) {
     identifyAt(e.x, e.y);
     _panning = false;

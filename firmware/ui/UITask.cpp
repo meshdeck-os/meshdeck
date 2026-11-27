@@ -5,6 +5,7 @@
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/AdvertDataHelpers.h>
 #include <helpers/ChannelDetails.h>
+#include <helpers/sensors/LocationProvider.h>
 #include <Utils.h>
 #include <SPIFFS.h>
 #include <RTClib.h>
@@ -342,6 +343,7 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
   _screens[SCR_WIFI]      = new WifiScreen(*this);
   _screens[SCR_CHANNELS]  = new ChannelsScreen(*this);
   _screens[SCR_VOICE]     = new VoiceScreen(*this);
+  _screens[SCR_GPS]       = new GpsInfoScreen(*this);
 
 
   termLog(C_TERM_SYS, "MeshDeck v%s on MeshCore %s", MESHDECK_VERSION, FIRMWARE_VERSION);
@@ -1570,6 +1572,47 @@ void UITask::repLogFrom(const ContactInfo& from, const char* text) {
 int UITask::batteryPercent() const { return Battery::percent(); }
 bool UITask::batteryCharging() const { return Battery::charging(); }
 
+UITask::GpsState UITask::gpsState() const {
+  if (!prefs || !prefs->gps_enabled) return GPS_OFF;
+  if (!sensors) return GPS_NO_MODULE;
+  // MeshCore only exposes the "gps" setting when a module sent data at boot.
+  const char* v = sensors->getSettingByKey("gps");
+  if (!v) return GPS_NO_MODULE;
+  if (v[0] != '1') return GPS_OFF;
+  LocationProvider* loc = sensors->getLocationProvider();
+  if (loc && loc->isValid()) return GPS_FIX;
+  return _gps_fix_ms ? GPS_LOST : GPS_SEARCHING;
+}
+
+void UITask::setManualPos(double lat, double lon) {
+  set.man_lat = (int32_t)lround(lat * 1000000.0);
+  set.man_lon = (int32_t)lround(lon * 1000000.0);
+  saveSettings();
+  // A live fix keeps winning (GPS overwrites node_lat/lon every update anyway);
+  // otherwise the manual position takes effect now (map "me", adverts, SOS).
+  if (sensors && !gpsFix()) {
+    sensors->node_lat = set.man_lat / 1000000.0;
+    sensors->node_lon = set.man_lon / 1000000.0;
+  }
+}
+
+void UITask::clearManualPos() {
+  set.man_lat = set.man_lon = 0;
+  saveSettings();
+  if (sensors && !gpsFix()) {
+    // fall back to the last real fix this boot, else no position at all
+    sensors->node_lat = _gps_fix_ms ? _gps_fix_lat : 0;
+    sensors->node_lon = _gps_fix_ms ? _gps_fix_lon : 0;
+  }
+}
+
+void UITask::openMap(MapReq req) {
+  _map_req = req;
+  ScreenId under = _stack_len > 0 ? _stack[_stack_len - 1] : SCR_HOME;
+  if (under == SCR_MAP || under == SCR_NEWMAPS) back();   // came here from a map
+  else go(_last_map);
+}
+
 int UITask::meshBars() const {
   uint32_t now = epochNow();
   int n = 0;
@@ -1910,6 +1953,13 @@ void UITask::loop() {
     if (_auto_login_at && (int32_t)(millis() - _auto_login_at) >= 0) {
       _auto_login_at = 0;
       tryAutoLoginRooms();
+    }
+    // remember the last real GPS fix (for "fix lost N min ago" and clearManualPos)
+    if (gpsState() == GPS_FIX) {
+      LocationProvider* loc = sensors->getLocationProvider();
+      _gps_fix_ms = millis();
+      _gps_fix_lat = loc->getLatitude() / 1000000.0;
+      _gps_fix_lon = loc->getLongitude() / 1000000.0;
     }
     _screens[_cur]->tick1s();
 #ifdef MESHDECK_BETA
