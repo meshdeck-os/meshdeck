@@ -16,15 +16,33 @@ public:
   bool nav(NavEvent e) override;
   bool touch(const TouchEvent& e) override;
 private:
-  int  visible(uint8_t* out);   // fill out[] with visible app indices, return count (#10)
-  void loadMenu();
-  void saveMenu();
-  int _sel = 0;
-  uint8_t _order[24];           // display order = permutation of app indices
-  bool _hidden[24];             // per-app hidden flag (indexed by app index)
-  bool _menuLoaded = false;
+  void startEdit(int grab);
+  void endEdit();
+  void clampSel();
+  // The app list, Home order and on-Home flags live in HomeScreen.cpp and are
+  // shared with AppsScreen (#10, #28).
+  int  _sel = 0;                // favourite slot; -1 = APPS button, -2 = EDIT button
   bool _edit = false;           // menu-edit mode
-  int _grab = -1;               // slot being dragged in edit mode, -1 = none
+  int  _grab = -1;              // slot being moved in edit mode, -1 = none
+  bool _drag = false;           // moving by touch (long-press + drag)
+};
+
+// "All apps": every app, always reachable, and where apps are added to or
+// removed from Home (#28).
+class AppsScreen : public Screen {
+public:
+  AppsScreen(UITask& u) : Screen(u) {}
+  void enter() override;
+  void draw() override;
+  bool key(uint8_t c) override;
+  bool nav(NavEvent e) override;
+  bool touch(const TouchEvent& e) override;
+private:
+  void toggle(int row);
+  void scrollTo(int row);
+  int _sel = 0;                 // row in the alphabetical list
+  int _top = 0;                 // first visible row
+  int _drag_acc = 0;            // touch-scroll remainder (px)
 };
 
 // ---------------------------------------------------------------- Chat

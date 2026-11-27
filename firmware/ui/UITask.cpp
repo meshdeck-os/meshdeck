@@ -324,6 +324,7 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
   if (_room_cred_n > 0) _auto_login_at = millis() + 8000;
 
   _screens[SCR_HOME]      = new HomeScreen(*this);
+  _screens[SCR_APPS]      = new AppsScreen(*this);
   _screens[SCR_CHAT]      = new ChatScreen(*this);
   _screens[SCR_CONTACTS]  = new ContactsScreen(*this);
   _screens[SCR_MAP]       = new MapScreen(*this);
