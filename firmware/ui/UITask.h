@@ -55,8 +55,16 @@ struct DeckSettings {
   int8_t  tz_offset;          // local time = UTC + tz_offset hours (-12..+14)
   uint8_t sos_disabled;       // 1 = hide/disable the SOS beacon tile
   uint8_t room_login_tries;   // auto-login attempts per room per boot (1..20, default 5)
-  uint8_t reserved[1];
+  uint8_t adv_move_10m;       // advert-on-move threshold in 10 m units, 0 = off (#10; was reserved[0])
+  // ---- end of the original 28-byte layout (DECKSET_V1_SIZE) ----
+  uint8_t ui_flags;           // UIF_* bits (#26: these used to sit in an out-of-bounds reserved[1])
+  uint8_t reserved[7];        // spare: add new fields here; older files load with them zeroed
 };
+#define DECKSET_V1_SIZE 28    // size of settings files written before #26
+#define UIF_PWRSAVE 0x01      // Power saver (#14)
+#define UIF_BIGTEXT 0x02      // Large chat text (#15)
+static_assert(offsetof(DeckSettings, ui_flags) == DECKSET_V1_SIZE,
+              "fields before ui_flags must keep the original on-disk layout");
 
 // ---- last heard ----
 #define HEARD_MAX 32

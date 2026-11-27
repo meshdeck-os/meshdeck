@@ -913,7 +913,7 @@ void ChatScreen::draw() {
           cur_len++;
         }
       }
-      const int cs = (ui.set.reserved[1] & 2) ? 2 : 1;   // Large chat text (#15)
+      const int cs = (ui.set.ui_flags & UIF_BIGTEXT) ? 2 : 1;   // Large chat text (#15)
       int want_w = longest * 6 * cs + 18;
 
       // Name row needs: pad + name + gap + sig + pad
