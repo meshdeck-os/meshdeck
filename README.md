@@ -69,6 +69,7 @@ Rendered at the T-Deck's native 320×240 display resolution.
   channel messages, repeater CLI commands, change radio settings - also mirrored
   to USB serial so you can use it from a computer
 - Home screen with big clock, mesh signal bars, battery and unread badge
+- **Your own Home**: pick which apps sit on Home and in what order; every app is always in **All apps**
 
 **Discovery, diagnostics & safety**
 - **First-boot setup**: choose your node name, then pick a regional radio preset from a built-in list (EU/UK, US, AU, NZ and more) so you match your local mesh
@@ -124,6 +125,8 @@ path are in **FLASHING.md**.
 | Shift + `$` (in chat) | clear the whole typed line (also: long-press -> Clear typed text) |
 | Touch | tap = select, drag = scroll/pan, swipe right = back |
 | Home screen keys 1-9 | quick-launch apps |
+| Home `a` / **Apps** button | All apps: open any app; `h` or the right-hand button adds/removes it from Home |
+| Home `e` / **Edit** button / long-press a tile | edit Home: hold + drag (or click to grab, trackball to move) to reorder; `h` / **Remove** takes an app off Home |
 
 ## Credits & licences
 
