@@ -78,6 +78,7 @@ void HomeScreen::draw() {
   // battery + mesh in corners
   char b[16];
   int pct = ui.batteryPercent();
+  b[0] = 0;
   if (ui.batteryCharging()) {
     // level isn't measurable through the charger - say so instead of "100%"
     snprintf(b, sizeof(b), "CHG");
@@ -89,6 +90,13 @@ void HomeScreen::draw() {
     c.setTextColor(pct > 20 ? C_FG_DIM : C_RED);
     c.setCursor(SCREEN_W - 8 - strlen(b) * 6, 8);
     c.print(b);
+  }
+  if (ui.set.ui_flags & UIF_PWRSAVE) {   // Power saver on (#14)
+    const char* sv = "SAVER";
+    int bw = b[0] ? (int)strlen(b) * 6 + 6 : 0;
+    c.setTextColor(C_CYAN);
+    c.setCursor(SCREEN_W - 8 - bw - (int)strlen(sv) * 6, 8);
+    c.print(sv);
   }
   int bars = ui.meshBars();
   for (int i = 0; i < 4; i++) {

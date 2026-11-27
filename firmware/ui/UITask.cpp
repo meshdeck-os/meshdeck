@@ -1704,8 +1704,10 @@ void UITask::drawStatusBar(const char* title) {
   // battery
   int pct = batteryPercent();
   x -= 24;
-  c.drawRect(x, 5, 18, 9, C_FG_DIM);
-  c.fillRect(x + 18, 7, 2, 5, C_FG_DIM);
+  // cyan outline = Power saver on (#14); the fill keeps showing the level
+  const uint16_t outline = (set.ui_flags & UIF_PWRSAVE) ? C_CYAN : C_FG_DIM;
+  c.drawRect(x, 5, 18, 9, outline);
+  c.fillRect(x + 18, 7, 2, 5, outline);
   if (batteryCharging()) {
     // on USB power: the real level can't be measured, so show a bolt instead
     // of a (false) full bar
