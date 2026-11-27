@@ -280,6 +280,19 @@ void UITask::fatalError(const char* msg) {
   hw.push();
 }
 
+// Accept the current layout and the original 28-byte one (files saved before
+// #26). Bytes an older file doesn't have are left zeroed, so new fields start
+// at 0 / off. Requiring an exact sizeof() match would reset every setting the
+// first time the struct grows.
+static bool readSettings(File& f, DeckSettings& out) {
+  DeckSettings tmp;
+  memset(&tmp, 0, sizeof(tmp));
+  int n = f.read((uint8_t*)&tmp, sizeof(tmp));
+  if (n < DECKSET_V1_SIZE || tmp.magic != DECKSET_MAGIC) return false;
+  out = tmp;
+  return true;
+}
+
 void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
   mesh = m;
   sensors = s;
@@ -289,8 +302,7 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
   bool loaded = false;
   File f = SPIFFS.open(SETTINGS_FILE, "r");
   if (f) {
-    DeckSettings tmp;
-    if (f.read((uint8_t*)&tmp, sizeof(tmp)) == sizeof(tmp) && tmp.magic == DECKSET_MAGIC) { set = tmp; loaded = true; }
+    loaded = readSettings(f, set);
     f.close();
   }
   // If SPIFFS held no valid config (fresh flash, or wiped by a Launcher reflash)
@@ -299,8 +311,7 @@ void UITask::begin(MyMesh* m, SensorManager* s, NodePrefs* p) {
   if (!loaded && hw.sdBegin()) {
     File s = SD.open(SD_SETTINGS_FILE, "r");
     if (s) {
-      DeckSettings tmp;
-      if (s.read((uint8_t*)&tmp, sizeof(tmp)) == sizeof(tmp) && tmp.magic == DECKSET_MAGIC) { set = tmp; loaded = true; }
+      loaded = readSettings(s, set);
       s.close();
     }
     hw.sdEnd();
@@ -1808,7 +1819,7 @@ void UITask::loop() {
   // auto-advert on movement: flood an advert once we've moved past the set
   // distance (>=30 s apart), so trackers update without spamming while still. (#10)
   {
-    uint8_t mv = set.reserved[0];                  // threshold in units of 10 m; 0 = off
+    uint8_t mv = set.adv_move_10m;                  // threshold in units of 10 m; 0 = off
     if (mv > 0 && gpsFix() && sensors) {
       double lat = sensors->node_lat, lon = sensors->node_lon;
       if (_adv_last_lat == 0 && _adv_last_lon == 0) { _adv_last_lat = lat; _adv_last_lon = lon; }
@@ -1824,11 +1835,11 @@ void UITask::loop() {
     }
   }
 
-  // Power saver (#14): when enabled (reserved[1] bit0), drop the CPU to 80 MHz
+  // Power saver (#14): when enabled (UIF_PWRSAVE), drop the CPU to 80 MHz
   // while the screen is off and restore 240 MHz when it's on. 80 MHz still runs
   // WiFi/BLE and the LoRa SPI, so reachability is unaffected.
   {
-    uint8_t want = (set.reserved[1] & 1) ? (hw.isDisplayOn() ? 240 : 80) : 240;
+    uint8_t want = (set.ui_flags & UIF_PWRSAVE) ? (hw.isDisplayOn() ? 240 : 80) : 240;
     if (want != _cpu_mhz) { setCpuFrequencyMhz(want); _cpu_mhz = want; }
   }
 

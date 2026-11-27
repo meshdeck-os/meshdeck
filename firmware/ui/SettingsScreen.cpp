@@ -146,9 +146,9 @@ void SettingsScreen::draw() {
       case SI_TIMEOUT: if (ui.set.timeout_s) snprintf(v, sizeof(v), "%d", ui.set.timeout_s); else strcpy(v, "never"); break;
       case SI_TZ:      snprintf(v, sizeof(v), "%+d", ui.set.tz_offset); break;
       case SI_SOSEN:   strcpy(v, ui.set.sos_disabled ? "off" : "on"); break;
-      case SI_ADVMOVE: if (ui.set.reserved[0]) snprintf(v, sizeof(v), "%dm", ui.set.reserved[0] * 10); else strcpy(v, "off"); break;
-      case SI_PWRSAVE: strcpy(v, (ui.set.reserved[1] & 1) ? "on" : "off"); break;
-      case SI_BIGTEXT: strcpy(v, (ui.set.reserved[1] & 2) ? "on" : "off"); break;
+      case SI_ADVMOVE: if (ui.set.adv_move_10m) snprintf(v, sizeof(v), "%dm", ui.set.adv_move_10m * 10); else strcpy(v, "off"); break;
+      case SI_PWRSAVE: strcpy(v, (ui.set.ui_flags & UIF_PWRSAVE) ? "on" : "off"); break;
+      case SI_BIGTEXT: strcpy(v, (ui.set.ui_flags & UIF_BIGTEXT) ? "on" : "off"); break;
       case SI_CLEARMSG: strcpy(v, ">"); break;
       case SI_CLEARCONTACTS: strcpy(v, ">"); break;
       case SI_ALWAYS:  strcpy(v, ui.set.always_on ? "on" : "off"); break;
@@ -257,13 +257,13 @@ void SettingsScreen::adjust(int dir) {
     case SI_ADVMOVE: {
       static const uint8_t MVS[] = { 0, 3, 5, 10, 15, 25 };   // units of 10 m
       int ii = 0;
-      for (int i = 0; i < 6; i++) if (ui.set.reserved[0] == MVS[i]) ii = i;
+      for (int i = 0; i < 6; i++) if (ui.set.adv_move_10m == MVS[i]) ii = i;
       ii = constrain(ii + dir, 0, 5);
-      ui.set.reserved[0] = MVS[ii];
+      ui.set.adv_move_10m = MVS[ii];
       break;
     }
-    case SI_PWRSAVE: ui.set.reserved[1] ^= 1; break;
-    case SI_BIGTEXT: ui.set.reserved[1] ^= 2; break;
+    case SI_PWRSAVE: ui.set.ui_flags ^= UIF_PWRSAVE; break;
+    case SI_BIGTEXT: ui.set.ui_flags ^= UIF_BIGTEXT; break;
     case SI_ALWAYS: ui.set.always_on = !ui.set.always_on; break;
     case SI_SOUND:  ui.set.sounds = !ui.set.sounds; ui.hw.setSound(ui.set.sounds, ui.set.volume); break;
     case SI_VOL:
