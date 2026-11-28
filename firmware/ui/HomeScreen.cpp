@@ -104,17 +104,20 @@ void HomeScreen::draw() {
   {
     char g[36];
     uint16_t gcol;
-    if (ui.prefs && ui.prefs->gps_enabled) {
-      if (ui.gpsFix() && ui.sensors) {
+    switch (ui.gpsState()) {
+      case UITask::GPS_FIX:
         snprintf(g, sizeof(g), "GPS %.4f,%.4f", ui.sensors->node_lat, ui.sensors->node_lon);
         gcol = C_GREEN;
-      } else {
-        strcpy(g, "GPS searching");
+        break;
+      case UITask::GPS_LOST: {
+        uint32_t m = (millis() - ui.gpsLastFixMs()) / 60000;
+        snprintf(g, sizeof(g), "GPS fix lost %lum ago", (unsigned long)m);
         gcol = C_YELLOW;
+        break;
       }
-    } else {
-      strcpy(g, "GPS off");
-      gcol = C_FG_FAINT;
+      case UITask::GPS_SEARCHING: strcpy(g, "GPS searching"); gcol = C_YELLOW; break;
+      case UITask::GPS_NO_MODULE: strcpy(g, "GPS no module"); gcol = C_YELLOW; break;
+      default:                    strcpy(g, "GPS off");       gcol = C_FG_FAINT; break;
     }
     int ws = ui.wifiState();
     char w[24];

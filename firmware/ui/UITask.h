@@ -19,7 +19,7 @@ class WebServer;   // ESP32 web server (remote screen), included only in WebScre
 enum ScreenId : uint8_t {
   SCR_HOME = 0, SCR_CHAT, SCR_CONTACTS, SCR_MAP, SCR_NEWMAPS, SCR_LASTHEARD, SCR_REPEATERS,
   SCR_TRACE, SCR_NOISE, SCR_TERMINAL, SCR_SETTINGS, SCR_QR,
-  SCR_ONBOARD, SCR_DIAG, SCR_SOS, SCR_MAPDL, SCR_WIFI, SCR_CHANNELS, SCR_VOICE, SCR_COUNT
+  SCR_ONBOARD, SCR_DIAG, SCR_SOS, SCR_MAPDL, SCR_WIFI, SCR_CHANNELS, SCR_VOICE, SCR_GPS, SCR_COUNT
 };
 
 class Screen {
@@ -216,7 +216,23 @@ public:
   int  wifiState() const;              // 0 off, 1 connecting, 2 connected
   char* wifiSsid() { return _wifi_ssid; }
   char* wifiPass() { return _wifi_pass; }
-  bool  gpsFix() const { return sensors && (sensors->node_lat != 0 || sensors->node_lon != 0); }
+  // ---- GPS state (GPS Info screen, status bar, home screen) ----
+  // A manual position is written into the same sensors->node_lat/lon that GPS
+  // updates, so "a position is set" does NOT mean "GPS has a fix". These read
+  // the location provider itself.
+  enum GpsState : uint8_t { GPS_OFF = 0, GPS_NO_MODULE, GPS_SEARCHING, GPS_FIX, GPS_LOST };
+  GpsState gpsState() const;
+  bool  gpsFix() const { return gpsState() == GPS_FIX; }   // live satellite fix only
+  uint32_t gpsLastFixMs() const { return _gps_fix_ms; }   // millis() of last valid fix, 0 = never
+  bool  hasManualPos() const { return set.man_lat != 0 || set.man_lon != 0; }
+  void  setManualPos(double lat, double lon);   // saves; applied now unless GPS has a live fix
+  void  clearManualPos();
+
+  // ---- map hand-off (GPS Info -> Map / NewMaps) ----
+  enum MapReq : uint8_t { MAPREQ_NONE = 0, MAPREQ_CENTER, MAPREQ_PICK };
+  void  openMap(MapReq req);                     // back to the map we came from, or the last map used
+  MapReq takeMapRequest() { MapReq r = _map_req; _map_req = MAPREQ_NONE; return r; }
+  void  noteMapScreen(ScreenId id) { _last_map = id; }
   const char* downloadMapPack(const char* name);   // fetch a .mdm over WiFi to SD; nullptr = ok
   const char* downloadMapIndex(char* buf, size_t sz, int& outlen);  // fetch maps/index.txt over WiFi
   const char* prepareSD();                          // create /meshdeck-maps on the SD card
@@ -409,6 +425,12 @@ private:
   uint8_t  _cpu_mhz = 240;          // current CPU clock, for the power saver (#14)
   bool _sos_active = false;
   uint32_t _sos_last = 0;
+
+  // GPS fix tracking + map hand-off
+  uint32_t _gps_fix_ms = 0;                        // millis() of last valid fix (0 = never)
+  double   _gps_fix_lat = 0, _gps_fix_lon = 0;     // position at that fix
+  MapReq   _map_req = MAPREQ_NONE;
+  ScreenId _last_map = SCR_MAP;
 
   // WiFi
   char _wifi_ssid[33] = "";
