@@ -10,6 +10,14 @@
 #define MD_THREAD_MSGS   48
 #define MD_TEXT_LEN      168
 #define MD_SENDER_LEN    16
+// Route a received message took (Message info in chat). Kept in RAM next to
+// each thread's ring, NOT saved: the saved file stores DeckMsg as raw bytes,
+// so DeckMsg itself must not change. After a reboot older messages have none.
+#define MD_ROUTE_BYTES   32               // 16 hops of 2-byte hashes, 32 of 1-byte
+#define MD_ROUTE_REC     (2 + MD_ROUTE_BYTES)   // [0] kind, [1] raw path_len, [2..] hashes
+#define ROUTE_NONE       0                      // not recorded (sent, or from before a reboot)
+#define ROUTE_FLOOD      1                      // flood: [2..] lists the repeaters passed
+#define ROUTE_DIRECT     2                      // sent along a known route; hops not listed
 
 // DeckMsg.flags bits
 #define MF_OUT        0x01
@@ -46,6 +54,7 @@ struct DeckThread {
   uint16_t count;                 // number of valid msgs (<= MD_THREAD_MSGS)
   uint16_t head;                  // next write slot
   DeckMsg* msgs;                  // ring buffer, PSRAM
+  uint8_t* routes;                // MD_THREAD_MSGS route records, parallel to msgs (RAM only)
 };
 
 class MessageStore {
@@ -63,6 +72,9 @@ public:
                 const uint8_t* voice = nullptr, uint16_t voice_len = 0);
 
   DeckMsg* msgAt(DeckThread* t, int i);             // i: 0 = oldest .. count-1 = newest
+  // Route record for a message (see MD_ROUTE_REC), or nullptr if none was kept.
+  void setRoute(DeckThread* t, const DeckMsg* m, uint8_t kind, uint8_t path_len, const uint8_t* path);
+  const uint8_t* routeOf(const DeckThread* t, const DeckMsg* m) const;
   bool markDelivered(uint32_t ack);                 // returns true if an outgoing msg matched
   void markTimedOut();                              // newest un-acked outgoing -> failed
   void markRead(DeckThread* t);

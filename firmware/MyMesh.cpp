@@ -487,6 +487,7 @@ void MyMesh::queueMessage(const ContactInfo &from, uint8_t txt_type, mesh::Packe
       _ui->onCliResponse(from, text);
     } else {
       const uint8_t* sp = (txt_type == TXT_TYPE_SIGNED_PLAIN && extra_len >= 4) ? extra : nullptr;
+      _ui->noteRxRoute(pkt->isRouteFlood(), pkt->path_len, pkt->path);
       _ui->onContactMsg(from, text, sender_timestamp, path_len, pkt->getSNR(), sp);
     }
   }
@@ -781,6 +782,7 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
     if (getChannel(channel_idx, ch_details)) {
       ch_name = ch_details.name;
     }
+    _ui->noteRxRoute(pkt->isRouteFlood(), pkt->path_len, pkt->path);
     _ui->onChannelMsg(channel_idx, ch_name, text, timestamp, path_len, pkt->getSNR());
   }
 }

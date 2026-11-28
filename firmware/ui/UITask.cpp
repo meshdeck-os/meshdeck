@@ -1205,7 +1205,7 @@ void UITask::onContactMsg(const ContactInfo& from, const char* text, uint32_t se
   // ---- store + UI ----
   DeckThread* t = store.forContact(from.id.pub_key, from.name);
   if (t) {
-    store.addMsg(t, sender_clean, body_clean, ts, 0, (int8_t)(snr * 4), path_len, 0);
+    attachRxRoute(t, store.addMsg(t, sender_clean, body_clean, ts, 0, (int8_t)(snr * 4), path_len, 0));
   } else {
     termLog(C_TERM_ERR, "store full - dropped msg from %s", from.name);
   }
@@ -1312,7 +1312,7 @@ void UITask::onChannelMsg(uint8_t channel_idx, const char* channel_name, const c
 
   DeckThread* t = store.forChannel(channel_idx, channel_name);
   if (t) {
-    store.addMsg(t, sender, body_clean, msg_ts, 0, (int8_t)(snr * 4), path_len, 0);
+    attachRxRoute(t, store.addMsg(t, sender, body_clean, msg_ts, 0, (int8_t)(snr * 4), path_len, 0));
   }
 
   termLog(C_TERM_RX, "[#%s] %s", channel_name, text);
@@ -1437,6 +1437,40 @@ const HeardEntry* UITask::heardAt(int i) const {
 }
 
 // ---------------------------------------------------------------- actions
+
+void UITask::noteRxRoute(bool flood, uint8_t path_len, const uint8_t* path) {
+  _rx_route_ok = true;
+  _rx_route_flood = flood;
+  _rx_route_len = path_len;
+  memset(_rx_route, 0, sizeof(_rx_route));
+  if (flood && path) {
+    size_t n = (size_t)(path_len & 63) * ((path_len >> 6) + 1);
+    memcpy(_rx_route, path, n < sizeof(_rx_route) ? n : sizeof(_rx_route));
+  }
+}
+
+void UITask::attachRxRoute(DeckThread* t, DeckMsg* m) {
+  if (!_rx_route_ok) return;
+  _rx_route_ok = false;                    // one route per received packet
+  if (t && m)
+    store.setRoute(t, m, _rx_route_flood ? ROUTE_FLOOD : ROUTE_DIRECT, _rx_route_len, _rx_route);
+}
+
+void UITask::fmtRouteHop(char* out, size_t sz, const uint8_t* hash, uint8_t hsz) {
+  char hex[12] = "";
+  for (uint8_t b = 0; b < hsz && b < 4; b++) snprintf(hex + b * 2, sizeof(hex) - b * 2, "%02x", hash[b]);
+  int matches = 0;
+  char name[32] = "";
+  int n = mesh ? mesh->getNumContacts() : 0;
+  for (int i = 0; i < n; i++) {
+    ContactInfo ct;
+    if (!mesh->getContactByIdx(i, ct) || memcmp(ct.id.pub_key, hash, hsz) != 0) continue;
+    if (++matches == 1) ellipsize(name, sizeof(name), ct.name);
+  }
+  if (matches == 1) snprintf(out, sz, "%s  %s", hex, name);
+  else if (matches > 1) snprintf(out, sz, "%s  (%d matches)", hex, matches);
+  else snprintf(out, sz, "%s", hex);
+}
 
 ContactInfo* UITask::contactByPrefix(const uint8_t* prefix6) {
   return mesh ? mesh->lookupContactByPubKey(prefix6, 6) : nullptr;

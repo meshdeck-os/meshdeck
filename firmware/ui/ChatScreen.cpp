@@ -336,7 +336,7 @@ void ChatScreen::openActions() {
   _add_dlg = SHARE_NONE;
   _overlay = OV_ACTIONS;
   _act_sel = 0;
-  const char* labels[6];
+  const char* labels[CA_MAX];
   _nactions = buildActionList(labels);
 }
 
@@ -344,7 +344,7 @@ void ChatScreen::openActions() {
 // dispatcher use this so the on-screen order and the action IDs never drift
 // apart. "New message" is first because starting a DM is the primary action -
 // it's the fix for "Chat doesn't take you to user messages" (#6).
-int ChatScreen::buildActionList(const char* labels[6]) {
+int ChatScreen::buildActionList(const char* labels[CA_MAX]) {
   int n = 0;
   DeckThread* t = cur();
   labels[n] = "New message...";    _act_ids[n++] = CA_NEW_MSG;
@@ -352,6 +352,7 @@ int ChatScreen::buildActionList(const char* labels[6]) {
   labels[n] = "Quick messages";    _act_ids[n++] = CA_QUICK;
   if (t && t->kind == TK_CHANNEL) { labels[n] = "Share this channel"; _act_ids[n++] = CA_SHARE_CHANNEL; }
   labels[n] = "Jump to latest";    _act_ids[n++] = CA_JUMP;
+  labels[n] = "Message info";      _act_ids[n++] = CA_INFO;    // newest received message
   if (_clen > 0) { labels[n] = "Clear typed text"; _act_ids[n++] = CA_CLEAR; }
   return n;
 }
@@ -365,6 +366,17 @@ void ChatScreen::runAction(int which) {
     case CA_SHARE_CHANNEL: shareCurrentChannel(); _overlay = OV_NONE; return;
     case CA_JUMP:          _scroll = 0; _overlay = OV_NONE; return;
     case CA_CLEAR:         clearCompose(); _overlay = OV_NONE; return;
+    case CA_INFO: {
+      DeckThread* t = cur();
+      int idx = -1;
+      for (int i = t ? t->count - 1 : -1; i >= 0 && idx < 0; i--) {
+        DeckMsg* m = ui.store.msgAt(t, i);
+        if (m && !(m->flags & MF_OUT)) idx = i;
+      }
+      if (idx < 0) { ui.toast("No received messages here", C_YELLOW); _overlay = OV_NONE; return; }
+      openMsgInfo(idx);
+      return;
+    }
     default:               _overlay = OV_NONE; return;
   }
 }
@@ -510,7 +522,7 @@ void ChatScreen::drawActionsMenu() {
   c.fillScreen(C_BG);
   ui.drawStatusBar("Chat actions");
 
-  const char* labels[6];
+  const char* labels[CA_MAX];
   int n = buildActionList(labels);
   _nactions = n;
 
@@ -532,6 +544,215 @@ void ChatScreen::drawActionsMenu() {
   c.setTextColor(C_FG_FAINT);
   c.setCursor(8, SCREEN_H - 12);
   c.print("up/down  enter=ok  back=close");
+}
+
+// ---------------------------------------------------------------- message info
+
+#define MI_LINE   11
+#define MI_BTN_W  150
+#define MI_BTN_H  22
+#define MI_BTN_X  8
+#define MI_BTN_Y  (SCREEN_H - 14 - MI_BTN_H - 2)
+
+void ChatScreen::openMsgInfo(int msg_idx) {
+  _canned = -1;
+  _add_dlg = SHARE_NONE;
+  _info_idx = msg_idx;
+  _info_opened = millis();
+  _overlay = OV_MSG_INFO;
+}
+
+bool ChatScreen::infoContact(ContactInfo& out) {
+  DeckThread* t = cur();
+  DeckMsg* m = t ? ui.store.msgAt(t, _info_idx) : nullptr;
+  if (!m || (m->flags & MF_OUT) || !ui.mesh) return false;
+  if (t->kind == TK_CONTACT) {
+    ContactInfo* c = ui.contactByPrefix(t->pub_prefix);
+    if (c) { out = *c; return true; }
+    return false;
+  }
+  // channel: the sender is only a name, so match it against contact names
+  int n = ui.mesh->getNumContacts();
+  for (int i = 0; i < n; i++) {
+    ContactInfo ct;
+    if (!ui.mesh->getContactByIdx(i, ct)) continue;
+    char nm[MD_SENDER_LEN];
+    StrHelper::strncpy(nm, ct.name, sizeof(nm));
+    sanitizeAscii(nm);
+    if (strcmp(nm, m->sender) == 0) { out = ct; return true; }
+  }
+  return false;
+}
+
+bool ChatScreen::infoHeard(ContactInfo& out) {
+  DeckThread* t = cur();
+  DeckMsg* m = t ? ui.store.msgAt(t, _info_idx) : nullptr;
+  if (!m || (m->flags & MF_OUT) || !m->sender[0]) return false;
+  // a channel sender is only a name: find their advert in Heard by name, then
+  // the full contact in the recent-advert cache (same as Heard > Save contact)
+  for (int i = 0; i < ui.heardCount(); i++) {
+    const HeardEntry* e = ui.heardAt(i);
+    if (!e) continue;
+    char nm[MD_SENDER_LEN];
+    StrHelper::strncpy(nm, e->name, sizeof(nm));
+    sanitizeAscii(nm);
+    if (strcmp(nm, m->sender) != 0) continue;
+    ContactInfo* recent = ui.findRecentContact(e->prefix);
+    if (recent) { out = *recent; return true; }
+  }
+  return false;
+}
+
+void ChatScreen::infoSave() {
+  ContactInfo ct;
+  if (!ui.mesh || !infoHeard(ct)) return;
+  if (ui.mesh->addContact(ct)) {
+    ui.mesh->saveContacts();
+    ui.toast("Contact saved - you can trace them now", C_GREEN);
+  } else {
+    ui.toast("Contact list full", C_RED);
+  }
+}
+
+void ChatScreen::infoTrace() {
+  ContactInfo ct;
+  if (!infoContact(ct)) { ui.toast("Sender isn't in your contacts", C_YELLOW); return; }
+  ContactInfo* live = ui.contactByPrefix(ct.id.pub_key);
+  if (live && ui.startTrace(*live)) { _overlay = OV_NONE; ui.go(SCR_TRACE); }
+}
+
+void ChatScreen::drawMsgInfo() {
+  GFXcanvas16& c = ui.cv();
+  c.fillScreen(C_BG);                       // opaque: no chat pixels underneath
+  ui.drawStatusBar("Message info");
+  DeckThread* t = cur();
+  DeckMsg* m = t ? ui.store.msgAt(t, _info_idx) : nullptr;
+  if (!m) { _overlay = OV_NONE; return; }
+  const bool out = m->flags & MF_OUT;
+  char line[64], buf[40];
+  int y = STATUS_H + 6;
+
+  // who + when
+  c.setTextSize(2);
+  c.setTextColor(out ? C_ACCENT : nameColor(m->sender[0] ? m->sender : t->title));
+  c.setCursor(8, y);
+  ellipsize(buf, 25, out ? "You" : (m->sender[0] ? m->sender : t->title));
+  c.print(buf);
+  c.setTextSize(1);
+  y += 20;
+  if (m->ts > 1600000000UL) {               // clock was set when it arrived
+    uint32_t lt = m->ts + (int32_t)ui.set.tz_offset * 3600;
+    char ago[16];
+    ui.fmtAgo(ago, sizeof(ago), m->ts);
+    snprintf(line, sizeof(line), "%s %02lu:%02lu  (%s)", out ? "Sent" : "Received",
+             (unsigned long)((lt / 3600) % 24), (unsigned long)((lt / 60) % 60), ago);
+    c.setTextColor(C_FG_DIM);
+    c.setCursor(8, y);
+    c.print(line);
+  }
+  y += 12;
+  char txt[(SCREEN_W - 16) / 6 + 1];
+  ellipsize(txt, sizeof(txt), m->text);
+  c.setTextColor(C_FG_FAINT);
+  c.setCursor(8, y);
+  c.print(txt);
+  y += 16;
+
+  if (out) {
+    c.setTextColor(C_FG_DIM);
+    c.setCursor(8, y);
+    c.print("Sent by you, so there is no incoming route.");
+  } else {
+    // hops + signal
+    const uint8_t hops = m->hops == 0xFF ? 0xFF : (m->hops & 63);
+    if (hops == 0xFF) snprintf(line, sizeof(line), "Direct route");
+    else if (hops == 0) snprintf(line, sizeof(line), "0 hops: heard straight from the sender");
+    else snprintf(line, sizeof(line), "%u hop%s", (unsigned)hops, hops == 1 ? "" : "s");
+    if (m->snr4) {
+      snprintf(buf, sizeof(buf), "   SNR %d dB", (int)m->snr4 / 4);
+      strncat(line, buf, sizeof(line) - strlen(line) - 1);
+    }
+    c.setTextColor(C_FG);
+    c.setCursor(8, y);
+    c.print(line);
+    y += 16;
+
+    // route
+    const uint8_t* r = ui.store.routeOf(t, m);
+    c.setTextColor(C_FG_FAINT);
+    c.setCursor(8, y);
+    if (!r) {
+      c.print("Route: not kept (arrived before the last reboot)");
+    } else if (r[0] == ROUTE_DIRECT) {
+      c.print("Route: direct packets don't list their repeaters");
+      ContactInfo ct;
+      if (t->kind == TK_CONTACT && infoContact(ct)) {
+        char p[48];
+        ui.fmtContactPath(p, sizeof(p), ct);
+        snprintf(line, sizeof(line), "Your route to them: %s", p);
+        y += MI_LINE;
+        c.setCursor(8, y);
+        c.print(line);
+      }
+    } else {
+      const uint8_t count = r[1] & 63, hsz = (r[1] >> 6) + 1;
+      const uint8_t kept = (uint8_t)(MD_ROUTE_BYTES / hsz) < count ? (uint8_t)(MD_ROUTE_BYTES / hsz) : count;
+      if (count == 0) {
+        c.print("Route: no repeaters");
+      } else {
+        c.print("Route, from the sender to you:");
+        // one column, or two when the route is longer than the space
+        const int top = y + MI_LINE;
+        const int rows = (MI_BTN_Y - 4 - top) / MI_LINE;
+        const int cols = kept > rows ? 2 : 1;
+        const int colw = (SCREEN_W - 16) / cols;
+        // if even two columns aren't enough, the last cell says how many are left
+        const int show = (kept <= rows * cols && kept == count) ? kept
+                       : (kept < rows * cols ? kept : rows * cols - 1);
+        for (int h = 0; h < show; h++) {
+          ui.fmtRouteHop(buf, sizeof(buf), r + 2 + h * hsz, hsz);
+          char cell[48];
+          snprintf(cell, sizeof(cell), "%2d. %s", h + 1, buf);
+          char fit[48];
+          ellipsize(fit, (size_t)(colw / 6), cell);    // keep each cell inside its column
+          c.setTextColor(C_FG);
+          c.setCursor(8 + (h / rows) * colw, top + (h % rows) * MI_LINE);
+          c.print(fit);
+        }
+        if (show < count) {
+          snprintf(line, sizeof(line), "+ %u more hops", (unsigned)(count - show));
+          c.setTextColor(C_FG_FAINT);
+          c.setCursor(8 + (show / rows) * colw, top + (show % rows) * MI_LINE);
+          c.print(line);
+        }
+      }
+    }
+  }
+
+  ContactInfo ct;
+  if (infoContact(ct)) {
+    c.drawRoundRect(MI_BTN_X, MI_BTN_Y, MI_BTN_W, MI_BTN_H, 4, C_ACCENT);
+    c.setTextColor(C_ACCENT);
+    c.setCursor(MI_BTN_X + 10, MI_BTN_Y + 7);
+    c.print("t  Trace route");
+  } else if (!out && infoHeard(ct)) {      // heard their advert: one step to a contact
+    c.drawRoundRect(MI_BTN_X, MI_BTN_Y, MI_BTN_W, MI_BTN_H, 4, C_GREEN);
+    c.setTextColor(C_GREEN);
+    c.setCursor(MI_BTN_X + 10, MI_BTN_Y + 7);
+    c.print("s  Save contact");
+    c.setTextColor(C_FG_FAINT);
+    c.setCursor(MI_BTN_X + MI_BTN_W + 8, MI_BTN_Y + 7);
+    c.print("then trace");
+  } else if (!out) {
+    c.setTextColor(C_FG_FAINT);
+    c.setCursor(8, MI_BTN_Y + 2);
+    c.print("Not a contact, and no advert from them yet.");
+    c.setCursor(8, MI_BTN_Y + 13);
+    c.print("When one arrives, Save contact shows here.");
+  }
+  c.setTextColor(C_FG_FAINT);
+  c.setCursor(8, SCREEN_H - 11);
+  c.print("tap or back = close");
 }
 
 void ChatScreen::drawContactPicker() {
@@ -807,6 +1028,10 @@ void ChatScreen::draw() {
     drawActionsMenu();
     return;
   }
+  if (_overlay == OV_MSG_INFO) {
+    drawMsgInfo();
+    return;
+  }
   if (_canned >= 0) {
     // Quick messages as exclusive screen too
     c.fillScreen(C_BG);
@@ -884,12 +1109,12 @@ void ChatScreen::draw() {
       char sig[24];
       sig[0] = 0;
       if (show_name) {
-        if (m->hops == 0xFF || m->hops == 0) {
+        // hops is the raw path_len: hop count in the low 6 bits, hash size in
+        // the top 2 (so 2-byte routes used to show "?")
+        if (m->hops == 0xFF || (m->hops & 63) == 0) {
           strcpy(sig, "direct");
-        } else if (m->hops < 32) {
-          snprintf(sig, sizeof(sig), "%uhop", (unsigned)m->hops);
         } else {
-          strcpy(sig, "?");
+          snprintf(sig, sizeof(sig), "%uhop", (unsigned)(m->hops & 63));
         }
         if (m->snr4 != 0) {
           char s2[12];
@@ -1162,6 +1387,12 @@ bool ChatScreen::key(uint8_t k) {
     }
     return true;  // swallow keys while dialog open
   }
+  if (_overlay == OV_MSG_INFO) {
+    if (k == 't' || k == 'T') { infoTrace(); return true; }
+    if (k == 's' || k == 'S') { infoSave(); return true; }
+    if (k == 0x0D || k == 0x1B || k == 0x08 || k == 0x7F || k == '`') _overlay = OV_NONE;
+    return true;                            // the typed line underneath stays untouched
+  }
   if (_overlay == OV_ACTIONS) {
     if (k == 0x0D) { runAction(_act_sel); return true; }
     if (k == 0x1B || k == 0x08 || k == 0x7F) { _overlay = OV_NONE; return true; }
@@ -1235,6 +1466,10 @@ bool ChatScreen::nav(NavEvent e) {
     if (e == NAV_BACK || e == NAV_LEFT) { _add_dlg = SHARE_NONE; return true; }
     return true;
   }
+  if (_overlay == OV_MSG_INFO) {
+    if (e == NAV_SELECT || e == NAV_BACK || e == NAV_LEFT) _overlay = OV_NONE;
+    return true;
+  }
   if (_overlay == OV_ACTIONS) {
     if (e == NAV_UP) { if (_act_sel > 0) _act_sel--; return true; }
     if (e == NAV_DOWN) { if (_act_sel < _nactions - 1) _act_sel++; return true; }
@@ -1294,6 +1529,19 @@ bool ChatScreen::touch(const TouchEvent& e) {
     return true;
   }
 
+  // ---- message info (layout must match drawMsgInfo) ----
+  if (_overlay == OV_MSG_INFO) {
+    if (e.kind == TouchEvent::RELEASE && millis() - _info_opened < 1500) return true;   // lift of the long-press
+    if (e.kind != TouchEvent::TAP) return true;
+    ContactInfo ct;
+    if (e.y >= MI_BTN_Y && e.x >= MI_BTN_X && e.x < MI_BTN_X + MI_BTN_W) {
+      if (infoContact(ct)) { infoTrace(); return true; }
+      if (infoHeard(ct))   { infoSave(); return true; }   // the card then offers Trace
+    }
+    _overlay = OV_NONE;                     // tap anywhere else closes
+    return true;
+  }
+
   // ---- long-press actions menu (layout must match drawActionsMenu) ----
   if (_overlay == OV_ACTIONS) {
     if (e.kind == TouchEvent::LONG) return true;
@@ -1342,8 +1590,15 @@ bool ChatScreen::touch(const TouchEvent& e) {
     return true;
   }
 
-  // Long-press anywhere in chat opens actions (while not in other dialogs)
+  // Long-press a message: its info. Anywhere else: chat actions (as before).
   if (e.kind == TouchEvent::LONG) {
+    for (int i = 0; i < _nhits; i++) {
+      if (e.y >= _hits[i].y0 && e.y <= _hits[i].y1) {
+        openMsgInfo(_hits[i].msg_idx);
+        ui.hw.beep(1200, 20);
+        return true;
+      }
+    }
     openActions();
     ui.hw.beep(1200, 20);
     return true;
