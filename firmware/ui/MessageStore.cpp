@@ -102,6 +102,8 @@ DeckMsg* MessageStore::addMsg(DeckThread* t, const char* sender, const char* tex
     }
   }
 
+  if (t->routes) memset(t->routes + (size_t)t->head * MD_ROUTE_REC, 0, MD_ROUTE_REC);  // slot reused
+
   t->head = (t->head + 1) % MD_THREAD_MSGS;
   if (t->count < MD_THREAD_MSGS) t->count++;
   t->last_ts = ts;
@@ -115,6 +117,33 @@ DeckMsg* MessageStore::msgAt(DeckThread* t, int i) {
   if (!t || !t->msgs || i < 0 || i >= t->count) return nullptr;
   int start = (t->head - t->count + MD_THREAD_MSGS * 2) % MD_THREAD_MSGS;
   return &t->msgs[(start + i) % MD_THREAD_MSGS];
+}
+
+void MessageStore::setRoute(DeckThread* t, const DeckMsg* m, uint8_t kind, uint8_t path_len,
+                            const uint8_t* path) {
+  if (!t || !t->msgs || !m || m < t->msgs || m >= t->msgs + MD_THREAD_MSGS) return;
+  if (!t->routes) {
+    size_t sz = (size_t)MD_THREAD_MSGS * MD_ROUTE_REC;
+    t->routes = (uint8_t*)heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
+    if (!t->routes) t->routes = (uint8_t*)malloc(sz);
+    if (!t->routes) return;
+    memset(t->routes, 0, sz);
+  }
+  uint8_t* r = t->routes + (size_t)(m - t->msgs) * MD_ROUTE_REC;
+  memset(r, 0, MD_ROUTE_REC);
+  r[0] = kind;
+  r[1] = path_len;
+  if (kind == ROUTE_FLOOD && path) {
+    size_t n = (size_t)(path_len & 63) * ((path_len >> 6) + 1);   // hash count * hash size
+    if (n > MD_ROUTE_BYTES) n = MD_ROUTE_BYTES;                  // very long routes: first hops only
+    memcpy(r + 2, path, n);
+  }
+}
+
+const uint8_t* MessageStore::routeOf(const DeckThread* t, const DeckMsg* m) const {
+  if (!t || !t->routes || !m || m < t->msgs || m >= t->msgs + MD_THREAD_MSGS) return nullptr;
+  const uint8_t* r = t->routes + (size_t)(m - t->msgs) * MD_ROUTE_REC;
+  return r[0] == ROUTE_NONE ? nullptr : r;
 }
 
 bool MessageStore::markDelivered(uint32_t ack) {
@@ -158,6 +187,7 @@ void MessageStore::clearAll() {
     if (_threads[i].msgs) {
       // free the ring if your allocator needs it (optional)
     }
+    if (_threads[i].routes) { free(_threads[i].routes); _threads[i].routes = nullptr; }
   }
   _num = 0;                 // <-- this is the important line
   persistNow();             // writes an empty store to /meshdeck_msgs.bin

@@ -136,6 +136,7 @@ public:
   void onAckDelivered(uint32_t ack, const ContactInfo* contact, uint32_t trip_ms) override;
   void onAdvertSeen(const ContactInfo& contact, bool is_new, uint8_t path_len) override;
   void onRawRx(float snr, float rssi, int len) override;
+  void noteRxRoute(bool flood, uint8_t path_len, const uint8_t* path) override;
   void onTraceResult(uint32_t tag, uint8_t path_len, const uint8_t* path_hashes,
                      const uint8_t* path_snrs, uint8_t snr_count, float final_snr) override;
   void onSendTimeout() override;
@@ -289,6 +290,9 @@ public:
   void fmtAgo(char* out, size_t sz, uint32_t epoch_then) const;
   // Contact out_path as "1a > 14 > 2b" (or "flood" / "direct")
   void fmtContactPath(char* out, size_t sz, const ContactInfo& ct) const;
+  // One hop of a route: "a3  HillTop" when exactly one contact's key starts
+  // with that hash, "a3  (2 matches)" when several do, else just "a3".
+  void fmtRouteHop(char* out, size_t sz, const uint8_t* hash, uint8_t hash_size);
   void drawStatusBar(const char* title);
 
   // number/symbol entry layer (works regardless of the keyboard chip's alt key)
@@ -427,6 +431,13 @@ private:
   WebServer* _web = nullptr;
   bool _remote_on = false;
   char _remote_url[40] = "";
+
+  // route of the packet being delivered to onContactMsg / onChannelMsg
+  bool    _rx_route_ok = false;
+  bool    _rx_route_flood = false;
+  uint8_t _rx_route_len = 0;
+  uint8_t _rx_route[MD_ROUTE_BYTES];
+  void    attachRxRoute(DeckThread* t, DeckMsg* m);
 
   // serial terminal input
   char _ser_line[96];

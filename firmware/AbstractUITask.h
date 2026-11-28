@@ -57,6 +57,10 @@ public:
   // ---- MeshDeck rich event hooks (default no-op) ----
 
   // direct message (txt_type TXT_TYPE_PLAIN / _SIGNED_PLAIN) from a known contact
+  // Called just before onContactMsg / onChannelMsg with the route of the
+  // packet the message arrived in. A flood packet lists the repeaters it
+  // passed (path hashes, oldest first); a direct one doesn't.
+  virtual void noteRxRoute(bool flood, uint8_t path_len, const uint8_t* path) {}
   virtual void onContactMsg(const ContactInfo& from, const char* text, uint32_t sender_ts,
                           uint8_t path_len, float snr,
                           const uint8_t* sender_prefix = nullptr) {}

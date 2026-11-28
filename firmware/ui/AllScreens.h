@@ -82,14 +82,24 @@ private:
   char    _add_name[32] = {0};
 
   // Long-press UI
-  enum Overlay : uint8_t { OV_NONE = 0, OV_ACTIONS, OV_PICK_CONTACT };
+  enum Overlay : uint8_t { OV_NONE = 0, OV_ACTIONS, OV_PICK_CONTACT, OV_MSG_INFO };
   Overlay _overlay = OV_NONE;
   int _act_sel = 0;               // actions menu selection
   int _nactions = 0;              // active action count (channel-dependent)
   // actions menu as an ID list (order can shift with context, so dispatch by ID)
-  enum ChatAct : uint8_t { CA_NEW_MSG, CA_SHARE_CONTACT, CA_QUICK, CA_SHARE_CHANNEL, CA_JUMP, CA_CLEAR };
-  uint8_t _act_ids[6];
-  int buildActionList(const char* labels[6]);
+  enum ChatAct : uint8_t { CA_NEW_MSG, CA_SHARE_CONTACT, CA_QUICK, CA_SHARE_CHANNEL, CA_JUMP, CA_CLEAR, CA_INFO };
+  static const int CA_MAX = 7;
+  uint8_t _act_ids[CA_MAX];
+  int buildActionList(const char* labels[CA_MAX]);
+
+  // Message info: long-press a message (or Chat actions > Message info) to see
+  // its hops, signal and the repeaters it came through.
+  int  _info_idx = -1;            // msg index in the current thread
+  uint32_t _info_opened = 0;
+  void openMsgInfo(int msg_idx);
+  void drawMsgInfo();
+  bool infoContact(ContactInfo& out);   // the sender, if they're a known contact
+  void infoTrace();
   bool _pick_new_msg = false;     // contact picker mode: true = open DM, false = share
   bool openDMAt(int picker_i);    // open/create a DM thread for the picked contact (#6)
   void pickerChoose(int picker_i);
