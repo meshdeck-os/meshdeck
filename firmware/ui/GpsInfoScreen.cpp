@@ -91,7 +91,8 @@ void GpsInfoScreen::draw() {
     bool manual = ui.hasManualPos() &&
                   fabs(lat - ui.set.man_lat / 1000000.0) < 0.0000015 &&
                   fabs(lon - ui.set.man_lon / 1000000.0) < 0.0000015;
-    src = manual ? "Manual" : "Last GPS fix";
+    // otherwise it's the last fix this boot, or the position MeshCore saved
+    src = manual ? "Manual" : ui.gpsLastFixMs() ? "Last GPS fix" : "Saved position";
     src_col = C_YELLOW;
   }
   if (lat != 0 || lon != 0) {

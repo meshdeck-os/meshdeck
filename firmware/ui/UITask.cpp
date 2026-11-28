@@ -1593,6 +1593,10 @@ void UITask::setManualPos(double lat, double lon) {
   if (sensors && !gpsFix()) {
     sensors->node_lat = set.man_lat / 1000000.0;
     sensors->node_lon = set.man_lon / 1000000.0;
+    // MeshCore restores node_lat/lon from its own prefs at boot, and the manual
+    // position is only applied when those are empty. Save them too, or a
+    // previously stored position comes back after a reboot.
+    if (mesh) mesh->savePrefs();
   }
 }
 
@@ -1603,6 +1607,7 @@ void UITask::clearManualPos() {
     // fall back to the last real fix this boot, else no position at all
     sensors->node_lat = _gps_fix_ms ? _gps_fix_lat : 0;
     sensors->node_lon = _gps_fix_ms ? _gps_fix_lon : 0;
+    if (mesh) mesh->savePrefs();         // don't bring the old position back at boot
   }
 }
 
