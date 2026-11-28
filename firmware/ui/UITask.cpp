@@ -2157,28 +2157,46 @@ void UITask::finishOnboarding() {
 }
 
 void UITask::toggleSOS() {
-  if (set.sos_disabled) { toast("SOS is disabled in Settings", C_YELLOW); return; }
-  if (!_sos_active) {
-    // Require a real location before the beacon can arm: a live GPS fix if a
-    // module is connected, otherwise the manual position from Settings.
-    double lat, lon;
-    if (!ownPos(lat, lon)) {
-      toast("Set a location first (GPS or manual)", C_YELLOW);
-      hw.chimeError();
-      _dirty = true;
-      return;
-    }
-    _sos_active = true;
-    hw.chimeError();
-    _sos_last = 0;          // force an immediate first broadcast
-    sendSOSNow();
-    toast("SOS ACTIVE - broadcasting", C_RED);
-  } else {
+  if (_sos_active) {
     _sos_active = false;
+    _sos_chan = 0;
     toast("SOS cancelled", C_YELLOW);
     termLog(C_TERM_SYS, "SOS cancelled");
+    _dirty = true;
+    return;
   }
+  startSOSHere(0);          // Public
+}
+
+bool UITask::startSOSHere(int channel_idx) {
+  if (set.sos_disabled) { toast("SOS is disabled in Settings", C_YELLOW); return false; }
+  if (_sos_active) return false;
+  ChannelDetails ch;
+  if (channel_idx < 0 || !mesh || !mesh->getChannel(channel_idx, ch)) {
+    toast("No such channel", C_RED);
+    return false;
+  }
+  // Require a real location before the beacon can arm: a live GPS fix if a
+  // module is connected, otherwise the manual position from Settings.
+  double lat, lon;
+  if (!ownPos(lat, lon)) {
+    toast("Set a location first (GPS or manual)", C_YELLOW);
+    hw.chimeError();
+    _dirty = true;
+    return false;
+  }
+  _sos_chan = channel_idx;
+  _sos_active = true;
+  hw.chimeError();
+  _sos_last = 0;            // force an immediate first broadcast
+  sendSOSNow();
+  toast("SOS ACTIVE - broadcasting", C_RED);
   _dirty = true;
+  return true;
+}
+
+void UITask::fmtOwnSOS(char* out, size_t n, double lat, double lon) const {
+  snprintf(out, n, "SOS! %s needs help @ %.5f,%.5f", prefs ? prefs->node_name : "?", lat, lon);
 }
 
 void UITask::sendSOSNow() {
@@ -2186,16 +2204,12 @@ void UITask::sendSOSNow() {
   char msg[110];
   double lat, lon;
   if (ownPos(lat, lon)) {
-    char slat[16], slon[16];
-    snprintf(slat, sizeof(slat), "%.5f", lat);
-    snprintf(slon, sizeof(slon), "%.5f", lon);
-    snprintf(msg, sizeof(msg), "SOS! %s needs help @ %s,%s",
-             prefs ? prefs->node_name : "?", slat, slon);
+    fmtOwnSOS(msg, sizeof(msg), lat, lon);
   } else {
     snprintf(msg, sizeof(msg), "SOS! %s needs help (no GPS fix)",
              prefs ? prefs->node_name : "?");
   }
-  sendChannel(0, msg);   // public channel
+  sendChannel((uint8_t)_sos_chan, msg);   // Public unless the SOS screen chose another
   termLog(C_TERM_TX, "%s", msg);
 }
 
@@ -3136,49 +3150,3 @@ bool DiagScreen::nav(NavEvent e) {
   return false;   // BACK (hold) still propagates to leave the screen
 }
 
-// ---------------------------------------------------------------- SOS beacon screen
-
-void SOSScreen::draw() {
-  GFXcanvas16& c = ui.cv();
-  bool on = ui.sosActive();
-  c.fillScreen(on ? C_RED : C_BG);
-  ui.drawStatusBar("SOS Beacon");
-
-  c.setTextSize(3);
-  c.setTextColor(on ? 0xFFFF : C_RED);
-  c.setCursor(120, 60);
-  c.print("SOS");
-
-  c.setTextSize(1);
-  c.setTextColor(on ? 0xFFFF : C_FG_DIM);
-  c.setCursor(40, 108);
-  c.print(on ? "ACTIVE - broadcasting every 2 min" : "Emergency location beacon");
-
-  double lat, lon;
-  bool have_pos = ui.ownPos(lat, lon);
-  char loc[52];
-  if (have_pos) snprintf(loc, sizeof(loc), "pos: %.5f, %.5f", lat, lon);
-  else snprintf(loc, sizeof(loc), "no location - set GPS or manual in Settings");
-  c.setTextColor(on ? 0xFFFF : (have_pos ? C_FG_FAINT : C_YELLOW));
-  c.setCursor(40, 132);
-  c.print(loc);
-
-  c.setTextColor(on ? 0xFFFF : (have_pos ? C_ACCENT : C_FG_FAINT));
-  c.setCursor(70, 190);
-  c.print(on ? "Click to STOP" : have_pos ? "Click to START" : "Needs a location first");
-}
-
-bool SOSScreen::key(uint8_t k) {
-  if (k == 0x0D) { ui.toggleSOS(); return true; }
-  return false;
-}
-
-bool SOSScreen::nav(NavEvent e) {
-  if (e == NAV_SELECT) { ui.toggleSOS(); return true; }
-  return false;   // let BACK bubble up to leave the screen
-}
-
-bool SOSScreen::touch(const TouchEvent& e) {
-  if (e.kind == TouchEvent::TAP) { ui.toggleSOS(); return true; }
-  return false;
-}

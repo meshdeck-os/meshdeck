@@ -204,9 +204,12 @@ public:
   uint32_t rxCount() const { return _rx_count; }
   void applyPreset(float freq, float bw, uint8_t sf, uint8_t cr);  // onboarding radio preset
   void finishOnboarding();             // mark configured + go home
-  void toggleSOS();                    // start/stop the SOS beacon
+  void toggleSOS();                    // stop the SOS beacon, or start it (own position, Public)
   bool sosActive() const { return _sos_active; }
   void sendSOSNow();
+  bool startSOSHere(int channel_idx);  // SOS screen: start the beacon on the chosen channel
+  int  sosChannel() const { return _sos_chan; }
+  void fmtOwnSOS(char* out, size_t n, double lat, double lon) const;
 
   // WiFi + connectivity (T-Deck Plus: built-in GPS, WiFi on the ESP32-S3)
   void loadWifi();
@@ -409,6 +412,7 @@ private:
   uint8_t  _cpu_mhz = 240;          // current CPU clock, for the power saver (#14)
   bool _sos_active = false;
   uint32_t _sos_last = 0;
+  int  _sos_chan = 0;                              // mesh channel index (0 = Public)
 
   // WiFi
   char _wifi_ssid[33] = "";
