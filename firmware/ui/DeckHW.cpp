@@ -40,6 +40,11 @@ bool DeckHW::begin(bool flip_display) {
   _tft->fillScreen(0x0000);
 
   _canvas = new GFXcanvas16(SCREEN_W, SCREEN_H);
+  // Adafruit GFX starts with text wrap ON: a label printed near the right edge
+  // carries on at x = 0 one line down, which leaves stray text ("ghosts") on the
+  // left of the maps. Only chat/console turned it off, so it depended on which
+  // screens had been opened since boot. Clip instead, everywhere.
+  _canvas->setTextWrap(false);
 
   // NOTE: we deliberately do NOT touch the I2C bus here. MeshCore's radio_init()
   // calls Wire.begin() itself; calling Wire.begin() twice (here AND there) leaves
