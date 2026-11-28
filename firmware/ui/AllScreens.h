@@ -381,13 +381,25 @@ private:
 
 // ---------------------------------------------------------------- SOS beacon
 
+// SOS beacon. Idle: pick the channel, see the exact message, then press Start.
+// Active: any press stops it.
 class SOSScreen : public Screen {
 public:
   SOSScreen(UITask& u) : Screen(u) {}
+  void enter() override;
   void draw() override;
   bool key(uint8_t c) override;
   bool nav(NavEvent e) override;
   bool touch(const TouchEvent& e) override;
+private:
+  void activate(int field);
+  void drawActive();
+  void drawForm();
+  void drawChannels();
+  bool _picking = false;        // choosing the channel
+  int  _sel = 0;                // form focus: channel / start
+  int  _chan = 0;               // mesh channel index (0 = Public)
+  int  _lsel = 0, _top = 0, _drag_acc = 0;
 };
 
 // ---------------------------------------------------------------- Map download (WiFi)
