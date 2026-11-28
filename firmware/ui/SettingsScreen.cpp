@@ -444,18 +444,11 @@ void SettingsScreen::applyEdit() {
       } else ui.toast("Invalid frequency", C_RED);
       break;
     }
-    case SI_MANLAT: {
-      ui.set.man_lat = (int32_t)(atof(_edit) * 1000000.0);
-      ui.saveSettings();
-      ui.applySettings();
-      if (ui.sensors) { ui.sensors->node_lat = ui.set.man_lat / 1000000.0; }
+    case SI_MANLAT:   // same path as "Set my position here", so it survives a reboot
+      ui.setManualPos(atof(_edit), ui.set.man_lon / 1000000.0);
       break;
-    }
     case SI_MANLON: {
-      ui.set.man_lon = (int32_t)(atof(_edit) * 1000000.0);
-      ui.saveSettings();
-      ui.applySettings();
-      if (ui.sensors) { ui.sensors->node_lon = ui.set.man_lon / 1000000.0; }
+      ui.setManualPos(ui.set.man_lat / 1000000.0, atof(_edit));
       break;
     }
     case SI_WIFISSID:
