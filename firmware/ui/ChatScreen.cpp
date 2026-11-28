@@ -584,6 +584,36 @@ bool ChatScreen::infoContact(ContactInfo& out) {
   return false;
 }
 
+bool ChatScreen::infoHeard(ContactInfo& out) {
+  DeckThread* t = cur();
+  DeckMsg* m = t ? ui.store.msgAt(t, _info_idx) : nullptr;
+  if (!m || (m->flags & MF_OUT) || !m->sender[0]) return false;
+  // a channel sender is only a name: find their advert in Heard by name, then
+  // the full contact in the recent-advert cache (same as Heard > Save contact)
+  for (int i = 0; i < ui.heardCount(); i++) {
+    const HeardEntry* e = ui.heardAt(i);
+    if (!e) continue;
+    char nm[MD_SENDER_LEN];
+    StrHelper::strncpy(nm, e->name, sizeof(nm));
+    sanitizeAscii(nm);
+    if (strcmp(nm, m->sender) != 0) continue;
+    ContactInfo* recent = ui.findRecentContact(e->prefix);
+    if (recent) { out = *recent; return true; }
+  }
+  return false;
+}
+
+void ChatScreen::infoSave() {
+  ContactInfo ct;
+  if (!ui.mesh || !infoHeard(ct)) return;
+  if (ui.mesh->addContact(ct)) {
+    ui.mesh->saveContacts();
+    ui.toast("Contact saved - you can trace them now", C_GREEN);
+  } else {
+    ui.toast("Contact list full", C_RED);
+  }
+}
+
 void ChatScreen::infoTrace() {
   ContactInfo ct;
   if (!infoContact(ct)) { ui.toast("Sender isn't in your contacts", C_YELLOW); return; }
@@ -705,6 +735,20 @@ void ChatScreen::drawMsgInfo() {
     c.setTextColor(C_ACCENT);
     c.setCursor(MI_BTN_X + 10, MI_BTN_Y + 7);
     c.print("t  Trace route");
+  } else if (!out && infoHeard(ct)) {      // heard their advert: one step to a contact
+    c.drawRoundRect(MI_BTN_X, MI_BTN_Y, MI_BTN_W, MI_BTN_H, 4, C_GREEN);
+    c.setTextColor(C_GREEN);
+    c.setCursor(MI_BTN_X + 10, MI_BTN_Y + 7);
+    c.print("s  Save contact");
+    c.setTextColor(C_FG_FAINT);
+    c.setCursor(MI_BTN_X + MI_BTN_W + 8, MI_BTN_Y + 7);
+    c.print("then trace");
+  } else if (!out) {
+    c.setTextColor(C_FG_FAINT);
+    c.setCursor(8, MI_BTN_Y + 2);
+    c.print("Not a contact, and no advert from them yet.");
+    c.setCursor(8, MI_BTN_Y + 13);
+    c.print("When one arrives, Save contact shows here.");
   }
   c.setTextColor(C_FG_FAINT);
   c.setCursor(8, SCREEN_H - 11);
@@ -1345,6 +1389,7 @@ bool ChatScreen::key(uint8_t k) {
   }
   if (_overlay == OV_MSG_INFO) {
     if (k == 't' || k == 'T') { infoTrace(); return true; }
+    if (k == 's' || k == 'S') { infoSave(); return true; }
     if (k == 0x0D || k == 0x1B || k == 0x08 || k == 0x7F || k == '`') _overlay = OV_NONE;
     return true;                            // the typed line underneath stays untouched
   }
@@ -1489,9 +1534,9 @@ bool ChatScreen::touch(const TouchEvent& e) {
     if (e.kind == TouchEvent::RELEASE && millis() - _info_opened < 1500) return true;   // lift of the long-press
     if (e.kind != TouchEvent::TAP) return true;
     ContactInfo ct;
-    if (e.y >= MI_BTN_Y && e.x >= MI_BTN_X && e.x < MI_BTN_X + MI_BTN_W && infoContact(ct)) {
-      infoTrace();
-      return true;
+    if (e.y >= MI_BTN_Y && e.x >= MI_BTN_X && e.x < MI_BTN_X + MI_BTN_W) {
+      if (infoContact(ct)) { infoTrace(); return true; }
+      if (infoHeard(ct))   { infoSave(); return true; }   // the card then offers Trace
     }
     _overlay = OV_NONE;                     // tap anywhere else closes
     return true;

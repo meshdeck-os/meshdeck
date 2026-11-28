@@ -99,7 +99,9 @@ private:
   void openMsgInfo(int msg_idx);
   void drawMsgInfo();
   bool infoContact(ContactInfo& out);   // the sender, if they're a known contact
+  bool infoHeard(ContactInfo& out);     // not a contact, but their advert was heard: can be saved
   void infoTrace();
+  void infoSave();
   bool _pick_new_msg = false;     // contact picker mode: true = open DM, false = share
   bool openDMAt(int picker_i);    // open/create a DM thread for the picked contact (#6)
   void pickerChoose(int picker_i);
