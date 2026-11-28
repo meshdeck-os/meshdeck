@@ -78,19 +78,14 @@ void ellipsize(char* dst, size_t dst_sz, const char* src) {
     }
   }
   dst[wi] = 0;
-  // Ellipsize if we filled the buffer (source still had more)
+  // Ellipsize only if the source had more than fits. Text that exactly fills
+  // the buffer is complete and stays as it is.
   if (*r && dst_sz >= 4) {
     size_t keep = dst_sz - 4;  // room for "..." + NUL
     dst[keep] = '.';
     dst[keep + 1] = '.';
     dst[keep + 2] = '.';
     dst[keep + 3] = 0;
-  } else if (wi >= dst_sz - 1 && dst_sz >= 4) {
-    // truncated by buffer; add ellipsis
-    dst[dst_sz - 4] = '.';
-    dst[dst_sz - 3] = '.';
-    dst[dst_sz - 2] = '.';
-    dst[dst_sz - 1] = 0;
   }
 }
 
