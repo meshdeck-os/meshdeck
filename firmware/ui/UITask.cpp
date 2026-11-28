@@ -274,6 +274,7 @@ void UITask::fatalError(const char* msg) {
   c.fillScreen(C_BG);
   c.setTextSize(2);
   c.setTextColor(C_RED);
+  c.setTextWrap(true);              // long messages continue on the next line
   c.setCursor(20, 100);
   c.print("ERROR: ");
   c.print(msg);
